@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>engine · seek(t) 动画模板</title>
+<!--
+  code-video-director 模板：画面只由时间 t 决定。部分思路来自 howseen-ai/claude-motion-design（MIT）
+  渲染：node <skill>/scripts/render.mjs engine.html --out out --fps 30 --workers 4
+  预览：直接用浏览器打开本文件 → 自动缩放到窗口循环播放；空格 暂停/继续，← → 逐帧
+  约定：
+    window.seek(t)     t 单位秒，只靠 t 算画面；不许用 setTimeout / setInterval / CSS transition / CSS animation
+    window.ready=true  字体等资源就绪后再设（本模板等 document.fonts.ready）
+    window.DURATION    默认时长（秒），render.mjs 没给 --dur 时用它
+  结构：#stage（舞台，尺寸改 :root 的 --W/--H）
+          ├─ canvas#fx   Canvas 层（点阵、曲线、粒子……），用 ctxCamera() 跟相机走
+          └─ div#world   DOM 层（文字、色块……），用 cssCamera() 跟相机走
+-->
+<style>
+:root {
+  --W: 1920; --H: 1080;                      /* 舞台尺寸：改这里，渲染时 --w/--h 跟着改 */
+  --paper: #ECE8DF; --ink: #17160F; --muted: #87827A; --accent: #F0532B; --line: rgba(23, 22, 15, .16);
+  --sans: "Inter", "SF Pro Display", -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --serif: Georgia, "Times New Roman", "Songti SC", serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #0c0c0c; }
+#stage {
+  position: relative; width: calc(var(--W) * 1px); height: calc(var(--H) * 1px); overflow: hidden;
+  background: var(--paper); color: var(--ink); font-family: var(--sans); transform-origin: 0 0;
+  -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision;
+}
+#fx { position: absolute; left: 0; top: 0; }
+#world { position: absolute; left: 0; top: 0; width: 100%; height: 100%; transform-origin: 0 0; }
+.abs { position: absolute; }
+/* 按词遮罩升起：.w 是遮罩（overflow:hidden），.wi 是真正移动的那层 */
+.w { display: inline-block; overflow: hidden; vertical-align: top; padding: .06em 0 .14em; margin: -.06em 0 -.14em; }
+.wi { display: inline-block; transform-origin: 0 100%; }
+
+/* ---------- 演示场景的样式（换场景时随便改） ---------- */
+.label { font: 500 22px/1 var(--mono); letter-spacing: .14em; color: var(--ink); text-transform: uppercase; }
+.label b { color: var(--accent); font-weight: 500; }
+#clock { font-variant-numeric: tabular-nums; letter-spacing: .06em; text-transform: none; }
+.rule { height: 2px; background: var(--ink); transform-origin: 0 50%; }
+.title { font-size: 172px; font-weight: 700; line-height: 1.04; letter-spacing: -.035em; white-space: nowrap; }
+.sub { font-size: 42px; font-weight: 400; line-height: 1.25; letter-spacing: -.01em; color: var(--muted); white-space: nowrap; }
+.sub em { font-style: normal; color: var(--ink); }
+.bar { width: 128px; height: 12px; background: var(--accent); transform-origin: 0 50%; }
+#block {
+  left: 1480px; top: 470px; width: 400px; height: 400px; margin: -200px 0 0 -200px; background: var(--accent);
+  color: #fff; border-radius: 6px; box-shadow: 0 40px 80px -30px rgba(120, 30, 0, .45);
+}
+#block .tag { left: 28px; top: 28px; font: 500 18px/1 var(--mono); letter-spacing: .14em; opacity: .8; }
+#block .glyph { left: 0; right: 0; top: 118px; text-align: center; font: italic 400 150px/1 var(--serif); letter-spacing: -.02em; }
+.axis { font: 400 20px/1 var(--mono); color: var(--muted); letter-spacing: .04em; white-space: nowrap; }
+.foot { font: 400 20px/1 var(--mono); color: var(--muted); letter-spacing: .08em; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="fx"></canvas>
+  <div id="world">
+    <div class="abs label" id="brand" style="left:140px; top:104px">Code&nbsp;Video&nbsp;Director&nbsp;&nbsp;<b>/</b>&nbsp;&nbsp;Engine&nbsp;01</div>
+    <div class="abs label" id="clock" style="right:140px; top:104px">t = 0.00 s</div>
+    <div class="abs rule" id="rule" style="left:140px; top:148px; width:1640px"></div>
+
+    <!-- data-split="word"：按空格分词（中文自己用空格断开）；data-split="char"：逐字；data-gap 是词间距 -->
+    <h1 class="abs title" id="title" style="left:128px; top:262px" data-split="word" data-gap="0">用代码<br>导演 每一帧</h1>
+    <div class="abs bar" id="bar" style="left:140px; top:660px"></div>
+    <p class="abs sub" id="sub" style="left:140px; top:712px" data-gap=".26em">Every frame is a <em>pure function</em> of time.</p>
+
+    <div class="abs" id="block">
+      <div class="abs tag">SPRING · f 1.5 · ζ 0.42</div>
+      <div class="abs glyph" id="glyph">f(t)</div>
+    </div>
+    <div class="abs axis" id="axisTitle" style="left:1180px; top:956px">spring(τ) · τ = 0 → 3 s</div>
+    <div class="abs axis" id="axisOne" style="left:1124px; top:780px">1.0</div>
+
+    <div class="abs foot" id="foot" style="left:140px; top:956px">seek(t) → frame　·　1920 × 1080　·　deterministic</div>
+  </div>
+</div>
+<script>
+/* =================== 1. 工具函数（一般不用改） =================== */
+const ROOT = getComputedStyle(document.documentElement);
+const W = Number(ROOT.getPropertyValue('--W')) || 1920, H = Number(ROOT.getPropertyValue('--H')) || 1080;
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, p) => a + (b - a) * p;
+const seg = (t, a, b) => clamp((t - a) / (b - a));            // t 在 [a,b] 区间里的进度 0–1
+const ends = (f) => (x) => (x <= 0 ? 0 : x >= 1 ? 1 : f(x));   // 缓动两端精确返回 0 和 1
+const E = {
+  linear: ends((x) => x),
+  inOutCubic: ends((x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2)),
+  outCubic: ends((x) => 1 - Math.pow(1 - x, 3)),
+  outBack: ends((x) => 1 + 2.70158 * Math.pow(x - 1, 3) + 1.70158 * Math.pow(x - 1, 2)),
+  outExpo: ends((x) => 1 - Math.pow(2, -10 * x)),
+};
+// 闭式阻尼弹簧（阶跃响应）：tau 是距起点的秒数，f 频率（Hz），z 阻尼比（<1 会回弹）。tau<=0 时为 0，最终趋于 1。
+function spring(tau, f = 3, z = 0.6) {
+  if (tau <= 0) return 0;
+  const w = 2 * Math.PI * f;
+  if (z >= 1) return 1 - Math.exp(-w * tau) * (1 + w * tau);
+  const wd = w * Math.sqrt(1 - z * z);
+  return 1 - Math.exp(-z * w * tau) * (Math.cos(wd * tau) + ((z * w) / wd) * Math.sin(wd * tau));
+}
+// 多目标弹簧求和：keys = [[t0, v0], [t1, v1], ...]，每换一次目标叠加一段弹簧，速度连续不跳变
+function springTo(t, keys, f = 3, z = 0.6) {
+  let v = keys[0][1];
+  for (let i = 1; i < keys.length; i++) v += (keys[i][1] - keys[i - 1][1]) * spring(t - keys[i][0], f, z);
+  return v;
+}
+// 带种子的随机数：同一种子每次结果一样，保证任意跳帧画面一致（不要用 Math.random）
+function mulberry32(a) {
+  return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+// 把元素里的文字拆成「遮罩 + 内层」：data-split="word" 按空格分词，"char" 逐字；保留 <br> 和 <em> 等内联标签
+function splitWords(el) {
+  const mode = el.dataset.split || 'word', gap = el.dataset.gap ?? (mode === 'char' ? '0' : '.25em'), out = [];
+  const walk = (node) => {
+    for (const n of [...node.childNodes]) {
+      if (n.nodeType === 3) {
+        const parts = mode === 'char' ? [...n.textContent.replace(/\s+/g, '')] : n.textContent.split(/\s+/).filter(Boolean);
+        const frag = document.createDocumentFragment();
+        for (const p of parts) {
+          const w = document.createElement('span'), wi = document.createElement('span');
+          w.className = 'w'; w.style.marginRight = gap; wi.className = 'wi'; wi.textContent = p;
+          w.appendChild(wi); frag.appendChild(w); out.push(wi);
+        }
+        n.replaceWith(frag);
+      } else if (n.nodeType === 1 && n.tagName !== 'BR') walk(n);
+    }
+  };
+  walk(el);
+  return out;
+}
+// 按词遮罩升起：第 k 个词在 start + k*stagger 开始，用 dur 秒从遮罩下方升到原位
+function riseWords(words, t, start, { stagger = 0.08, dur = 0.9, ease = E.outExpo, from = 110, tilt = 4 } = {}) {
+  words.forEach((w, k) => {
+    const p = ease(seg(t, start + k * stagger, start + k * stagger + dur));
+    w.style.transform = `translateY(${(1 - p) * from}%) rotate(${(1 - p) * tilt}deg)`;
+  });
+}
+// 相机：关键帧 {t, x, y, s, r, ease}，(x,y) 是画面中心对准的世界坐标；位置按缓动插值，缩放按对数插值（推拉匀速）
+function cameraAt(t, keys, ease = E.inOutCubic) {
+  if (t <= keys[0].t) return { r: 0, ...keys[0] };
+  for (let i = 1; i < keys.length; i++) {
+    const a = keys[i - 1], b = keys[i];
+    if (t > b.t) continue;
+    const p = (b.ease || ease)(seg(t, a.t, b.t));
+    return { x: lerp(a.x, b.x, p), y: lerp(a.y, b.y, p), s: Math.exp(lerp(Math.log(a.s), Math.log(b.s), p)), r: lerp(a.r || 0, b.r || 0, p) };
+  }
+  return { r: 0, ...keys[keys.length - 1] };
+}
+const mixCam = (c, k) => ({ x: lerp(W / 2, c.x, k), y: lerp(H / 2, c.y, k), s: Math.exp(Math.log(c.s) * k), r: (c.r || 0) * k }); // k<1 做视差
+const cssCamera = (el, c) => { el.style.transform = `translate(${W / 2}px,${H / 2}px) rotate(${c.r || 0}deg) scale(${c.s}) translate(${-c.x}px,${-c.y}px)`; };
+const ctxCamera = (ctx, c) => { ctx.setTransform(1, 0, 0, 1, W / 2, H / 2); ctx.rotate(((c.r || 0) * Math.PI) / 180); ctx.scale(c.s, c.s); ctx.translate(-c.x, -c.y); };
+const fade = (el, p, dy = 14) => { el.style.opacity = p; el.style.transform = `translateY(${(1 - p) * dy}px)`; };
+
+/* =================== 2. 场景（改这里） =================== */
+const DURATION = 6;
+window.DURATION = DURATION;
+const $ = (id) => document.getElementById(id);
+const world = $('world'), fx = $('fx'), ctx = fx.getContext('2d');
+fx.width = W; fx.height = H;
+const titleWords = splitWords($('title')), subWords = splitWords($('sub'));
+const BLOCK_T = 1.5, F = 1.5, Z = 0.42;                       // 方块入场时刻、弹簧频率、阻尼比（canvas 曲线共用）
+const CAM = [{ t: 0, x: 960, y: 540, s: 1 }, { t: DURATION, x: 900, y: 522, s: 1.075, r: -0.25 }]; // 慢推
+const PLOT = { x0: 1180, x1: 1780, y0: 930, y1: 790, T: 3 };  // 曲线区域：τ 0–3 秒 → x0–x1，值 0–1 → y0–y1
+const ACCENT = ROOT.getPropertyValue('--accent').trim(), PAPER = ROOT.getPropertyValue('--paper').trim();
+const rnd = mulberry32(7), DOTS = [];
+for (let y = 20; y < H; y += 40) for (let x = 20; x < W; x += 40) DOTS.push([x, y, 1.1 + rnd() * 1.3]);
+
+function draw(t, cam) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctxCamera(ctx, mixCam(cam, 0.45));                          // 背景点阵只跟相机走 45%，形成视差
+  ctx.fillStyle = `rgba(23,22,15,${0.11 * E.outCubic(seg(t, 0, 1.2))})`;
+  for (const [x, y, r] of DOTS) { ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); }
+
+  ctxCamera(ctx, cam);
+  const P = PLOT, show = E.outCubic(seg(t, 1.3, 1.9)), tau = clamp(t - BLOCK_T, 0, P.T);
+  const at = (u) => [lerp(P.x0, P.x1, u / P.T), lerp(P.y0, P.y1, spring(u, F, Z))];
+  ctx.globalAlpha = show;
+  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(23,22,15,.28)'; ctx.setLineDash([6, 9]);
+  ctx.beginPath(); ctx.moveTo(P.x0, P.y1); ctx.lineTo(P.x1, P.y1); ctx.stroke(); ctx.setLineDash([]);
+  ctx.strokeStyle = 'rgba(23,22,15,.55)';
+  ctx.beginPath(); ctx.moveTo(P.x0, P.y0); ctx.lineTo(lerp(P.x0, P.x1, E.outExpo(seg(t, 1.3, 2.1))), P.y0); ctx.stroke();
+  for (let k = 0; k <= 6; k++) {
+    const x = lerp(P.x0, P.x1, k / 6), q = E.outCubic(seg(t, 1.4 + k * 0.05, 1.8 + k * 0.05));
+    ctx.beginPath(); ctx.moveTo(x, P.y0); ctx.lineTo(x, P.y0 + 12 * q); ctx.stroke();
+  }
+  if (t > BLOCK_T) {                                           // 曲线画到「此刻」：和方块用的是同一个 spring
+    ctx.strokeStyle = ACCENT; ctx.lineWidth = 4; ctx.lineJoin = ctx.lineCap = 'round'; ctx.beginPath();
+    for (let k = 0; k <= 240; k++) { const [x, y] = at((tau * k) / 240); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+    ctx.stroke();
+    const [hx, hy] = at(tau);
+    ctx.fillStyle = ACCENT; ctx.beginPath(); ctx.arc(hx, hy, 10, 0, 7); ctx.fill();
+    ctx.fillStyle = PAPER; ctx.beginPath(); ctx.arc(hx, hy, 4.5, 0, 7); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+window.seek = async (t) => {
+  const cam = cameraAt(t, CAM);
+  cssCamera(world, cam);
+  fade($('brand'), E.outCubic(seg(t, 0.05, 0.7)));
+  fade($('clock'), E.outCubic(seg(t, 0.15, 0.8)));
+  $('clock').textContent = `t = ${t.toFixed(2)} s`;
+  $('rule').style.transform = `scaleX(${E.inOutCubic(seg(t, 0.1, 1.3))})`;
+  riseWords(titleWords, t, 0.3, { stagger: 0.14, dur: 1.1 });
+  riseWords(subWords, t, 1.05, { stagger: 0.045, dur: 0.9, tilt: 2 });
+  $('bar').style.transform = `scaleX(${E.outExpo(seg(t, 2.1, 2.9))})`;
+  const k = spring(t - BLOCK_T, F, Z);                         // 方块：弹簧放大 + 回正旋转
+  $('block').style.opacity = t < BLOCK_T ? 0 : 1;
+  $('block').style.transform = `scale(${Math.max(0, k)}) rotate(${(1 - k) * -16}deg)`;
+  const g = E.outExpo(seg(t, BLOCK_T + 0.3, BLOCK_T + 1.1));
+  $('glyph').style.opacity = g; $('glyph').style.transform = `translateY(${(1 - g) * 36}px)`;
+  fade($('axisTitle'), E.outCubic(seg(t, 1.5, 2.1)));
+  fade($('axisOne'), E.outCubic(seg(t, 1.6, 2.2)));
+  fade($('foot'), E.outCubic(seg(t, 2.5, 3.3)));
+  draw(t, cam);
+};
+
+/* =================== 3. 就绪 + 浏览器预览（渲染时不走预览） =================== */
+const RENDER = navigator.webdriver === true || /[?&]render\b/.test(location.search);
+function startPreview() {
+  const st = $('stage');
+  const fit = () => { const k = Math.min(innerWidth / W, innerHeight / H);
+    st.style.transform = `translate(${(innerWidth - W * k) / 2}px,${(innerHeight - H * k) / 2}px) scale(${k})`; };
+  addEventListener('resize', fit); fit();
+  let playing = true, cur = 0, last = performance.now();
+  addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { playing = !playing; e.preventDefault(); }
+    if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
+      playing = false; cur = clamp(cur + (e.code === 'ArrowRight' ? 1 : -1) / 30, 0, DURATION); window.seek(cur);
+    }
+  });
+  const loop = (now) => { if (playing) { cur = (cur + (now - last) / 1000) % DURATION; window.seek(cur); } last = now; requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+}
+document.fonts.ready.then(async () => { await window.seek(0); window.ready = true; if (!RENDER) startPreview(); });
+</script>
+</body>
+</html>

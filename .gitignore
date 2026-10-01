@@ -1,0 +1,5 @@
+node_modules/
+out/
+frames/
+*.mp4
+.DS_Store
