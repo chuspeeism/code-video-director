@@ -257,7 +257,7 @@ async function main() {
       const from = o.from ?? 0, to = o.to ?? dur, K = o.sub;
       const i0 = Math.round(from * o.fps), i1 = Math.round(to * o.fps);
       if (i1 <= i0) throw new Error(`时间区间不对：--from ${from} --to ${to}`);
-      const frameDir = path.join(out, K === 1 ? 'frames' : `frames_sub${K}`);
+      const frameDir = path.join(out, K === 1 ? 'frames.noindex' : `frames_sub${K}.noindex`);  // .noindex：macOS 的 Spotlight 不去索引成千上万张帧
       fs.mkdirSync(frameDir, { recursive: true });
       const metaFile = path.join(frameDir, 'meta.json');
       const meta = { w: o.w, h: o.h, fps: o.fps, sub: K, page: path.basename(pagePath), hash: pageHash(pagePath) };
