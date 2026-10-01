@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""qa.py —— 成片自检：规格、黑帧、冻帧、静音、响度、硬切点卡拍，外加联系表和手机尺寸预览图。
+"""qa.py —— 成片自检：规格、黑帧、冻帧、构图（空底、雷同、变化）、静音、响度、硬切点卡拍，外加联系表和手机尺寸预览图。
 部分思路来自 howseen-ai/claude-motion-design（MIT）
 
 用法：python3 qa.py <成片.mp4> [--expect-size 1920x1080] [--expect-dur 60]
@@ -103,6 +103,46 @@ def beat_check(path, cuts):
             "cut_at_drop": bool(drop is not None and any(abs(c - drop) <= 0.1 for c in cuts))}
 
 
+def compose_scan(path, dur):
+    """构图检查：每秒取一帧（160×90），算三样——
+    空底：一帧里最多的那种颜色占多大面积（>50% 说明大片留白或空底摆卡片）；
+    构图雷同：相隔 3 秒以上的两帧，边缘分布有多像（平均 >0.45 说明版式重复、机位不变）；
+    每秒变化：相邻两秒的帧有多像（平均 >0.82 说明画面像幻灯片翻页或一直同一个机位）。
+    阈值用原片和翻车片校准过：动画、实拍、地图类原片都在阈值内。"""
+    import numpy as np
+    w, h = 160, 90
+    raw = run_bytes([tool("ffmpeg"), "-v", "error", "-i", path, "-vf", f"fps=1,scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+    n = len(raw) // (w * h * 3)
+    if n < 6:
+        return None
+    F = np.frombuffer(raw[: n * w * h * 3], np.uint8).reshape(n, h, w, 3).astype(np.float32)
+
+    def bgfrac(f):
+        q = (f // 32).astype(int)
+        k = q[..., 0] * 64 + q[..., 1] * 8 + q[..., 2]
+        return np.bincount(k.ravel(), minlength=512).max() / k.size
+
+    def layout(f):
+        g = f.mean(2)
+        e = np.abs(np.diff(g, axis=1))[:-1, :] + np.abs(np.diff(g, axis=0))[:, :-1]
+        H, W = e.shape
+        e = e[: H // 10 * 10, : W // 10 * 10].reshape(H // 10, 10, W // 10, 10).mean((1, 3)).ravel()
+        e = e - e.mean()
+        nn = np.linalg.norm(e)
+        return e / nn if nn else e
+
+    bf = np.array([bgfrac(f) for f in F])
+    L = np.array([layout(f) for f in F])
+    far = [float(L[i] @ L[j]) for i in range(n) for j in range(i + 3, n)]
+    adj = [float(L[i] @ L[i + 1]) for i in range(n - 1)]
+    return {"empty_share": round(float((bf > 0.5).mean()), 3), "layout_sim": round(float(np.mean(far)), 3) if far else None,
+            "adjacent_sim": round(float(np.mean(adj)), 3), "samples": n}
+
+
+def run_bytes(args):
+    return subprocess.run(args, capture_output=True).stdout
+
+
 def main():
     ap = argparse.ArgumentParser(description="成片自检：规格、黑帧、冻帧、静音、响度、卡拍、联系表")
     ap.add_argument("video")
@@ -153,6 +193,16 @@ def main():
     add("冻帧", WARN if mid else PASS, ("画面停住超过 1.5 秒：" + "，".join(f"{a:.2f}–{b:.2f} 秒" for a, b in mid) + note)
         if mid else "没有中途停住超过 1.5 秒的画面" + note)
 
+    cs = compose_scan(v, dur)
+    if cs:
+        add("画面空不空", WARN if cs["empty_share"] >= 0.5 else PASS,
+            f"{cs['empty_share']:.0%} 的帧有一半以上面积是同一种底色" + ("：大片留白或空底上摆卡片，把主体放大、画面铺满场景" if cs["empty_share"] >= 0.5 else ""))
+        if cs["layout_sim"] is not None:
+            add("构图变化", WARN if cs["layout_sim"] > 0.45 else PASS,
+                f"相隔 3 秒以上的画面平均相似度 {cs['layout_sim']:.2f}（>0.45 算雷同）" + ("：各镜头版式重复、机位不变，换景别和角度" if cs["layout_sim"] > 0.45 else ""))
+        add("每秒变化", WARN if cs["adjacent_sim"] > 0.82 else PASS,
+            f"相邻两秒画面平均相似度 {cs['adjacent_sim']:.2f}（>0.82 算太少）" + ("：像幻灯片翻页或一直同一个机位，加相机运动和镜头切换" if cs["adjacent_sim"] > 0.82 else ""))
+
     au, bc = None, None
     if info["has_audio"]:
         au = audio_scan(v, dur)
@@ -197,7 +247,7 @@ def main():
     nf, nw = sum(i["status"] == FAIL for i in items), sum(i["status"] == WARN for i in items)
     verdict = f"不通过（{nf} 项不通过，{nw} 项警告）" if nf else (f"有 {nw} 项警告" if nw else "全部通过")
     report = {"file": v, "spec": info, "verdict": verdict, "items": items, "blacks": blacks, "freezes": freezes,
-              "cuts": cuts, "audio": au, "beats": bc, "images": imgs}
+              "cuts": cuts, "compose": cs, "audio": au, "beats": bc, "images": imgs}
     rp = os.path.join(out_dir, "qa_report.json")
     with open(rp, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)
