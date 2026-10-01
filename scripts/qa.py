@@ -24,6 +24,13 @@ import subprocess
 import sys
 
 sys.dont_write_bytecode = True
+try:
+    import numpy  # noqa: F401  构图、卡拍检查要用
+except ImportError:
+    sys.exit("[错误] 缺 numpy。先运行：python3 -m pip install numpy\n"
+             "如果被拦（Homebrew 等 Python 会提示 externally-managed-environment），就建一个虚拟环境：\n"
+             "  python3 -m venv .venv && .venv/bin/pip install numpy\n"
+             "然后用 .venv/bin/python 运行本 skill 的脚本。")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 PASS, WARN, FAIL = "通过", "警告", "不通过"

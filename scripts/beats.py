@@ -16,7 +16,13 @@ import shutil
 import subprocess
 import sys
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:  # 新装的 Python 常常没有 numpy，给一句能照做的提示
+    sys.exit("[错误] 缺 numpy。先运行：python3 -m pip install numpy\n"
+             "如果被拦（Homebrew 等 Python 会提示 externally-managed-environment），就建一个虚拟环境：\n"
+             "  python3 -m venv .venv && .venv/bin/pip install numpy\n"
+             "然后用 .venv/bin/python 运行本 skill 的脚本。")
 
 SR, HOP, NFFT = 22050, 256, 1024
 FPS = SR / HOP            # 起音包络的帧率，约 86 帧/秒
