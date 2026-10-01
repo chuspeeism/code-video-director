@@ -106,6 +106,28 @@ def beat_check(path, cuts):
             "cut_at_drop": bool(drop is not None and any(abs(c - drop) <= 0.1 for c in cuts))}
 
 
+def spike_cuts(path, fps):
+    """补漏的切点检测：逐帧缩成 64×36 灰度，算相邻帧差；某一帧的差值明显高于前后几帧
+    （超过邻近 8 帧中位数的 3 倍，且平均差 > 8），就算一个硬切。
+    专门补 scene 阈值漏掉的「同一场景里的切换」：暗色调、同一个房间、叠着同一层界面的镜头之间。"""
+    import numpy as np
+    raw = run_bytes([tool("ffmpeg"), "-v", "error", "-i", path, "-an", "-vf", "scale=64:36,format=gray", "-f", "rawvideo", "-"])
+    n = len(raw) // (64 * 36)
+    if n < 3 or not fps:
+        return []
+    fr = np.frombuffer(raw[: n * 64 * 36], np.uint8).reshape(n, 36, 64).astype(np.float32)
+    d = np.abs(np.diff(fr, axis=0)).mean(axis=(1, 2))
+    out = []
+    for i in range(len(d)):
+        nb = np.concatenate([d[max(0, i - 4):i], d[i + 1:i + 5]])
+        base = float(np.median(nb)) if len(nb) else 0.0
+        if d[i] > max(3.0 * base, 8.0):
+            t = round((i + 1) / fps, 3)
+            if not out or t - out[-1] > 0.15:
+                out.append(t)
+    return out
+
+
 def compose_scan(path, dur):
     """构图检查：每秒取一帧（160×90），算三样——
     空底：一帧里最多的那种颜色占多大面积（>50% 说明大片留白或空底摆卡片）；
@@ -190,6 +212,8 @@ def main():
         add("音轨", WARN, "声明了既没音乐也没人声，但成片里有音轨")
 
     blacks, freezes, cuts = video_scan(v, dur)
+    extra = [c for c in spike_cuts(v, fps) if all(abs(c - k) > 0.15 for k in cuts)]
+    cuts = sorted(cuts + extra)
     add("黑帧", WARN if blacks else PASS, ("超过 0.3 秒的黑场：" + "，".join(f"{a:.2f}–{b:.2f} 秒" for a, b in blacks))
         if blacks else "没有超过 0.3 秒的黑场")
     tail = [f for f in freezes if f[1] >= dur - 0.15]
@@ -236,7 +260,7 @@ def main():
     elif not (args.music or args.voice):
         add("音频", PASS, "没有音轨，跳过静音/响度/卡拍检查")
 
-    cut_s = f"硬切 {len(cuts)} 处（场景变化 > 0.3）" + ("：" + " ".join(f"{c:.2f}" for c in cuts[:30]) if cuts else "")
+    cut_s = f"硬切 {len(cuts)} 处（场景变化 > 0.3，加上相邻帧差突变 {len(extra)} 处）" + ("：" + " ".join(f"{c:.2f}" for c in cuts[:30]) if cuts else "")
     add("硬切点", PASS, cut_s + (" …" if len(cuts) > 30 else ""))
     if info["has_audio"] and not args.no_music:
         try:
