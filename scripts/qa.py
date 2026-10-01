@@ -5,6 +5,9 @@
 
 用法：python3 qa.py <成片.mp4> [--expect-size 1920x1080] [--expect-dur 60]
                   [--music | --no-music] [--voice | --no-voice] [--out 目录]
+                  [--allow-solid-bg] [--fixed-layout]
+  --allow-solid-bg       只给「纯色大底的动态排版」用：不查画面空不空
+  --fixed-layout         只给「固定界面的交互网页录屏、说明书」用：不查构图变化和每秒变化
   --music / --no-music   声明成片有没有背景音乐（用来判断静音比例是否合理、要不要查卡拍）
   --voice / --no-voice   声明有没有人声/配音
   --out                  报告和预览图放哪（默认：成片旁边的 <成片名>_qa/）
@@ -154,6 +157,8 @@ def main():
     g2.add_argument("--voice", action="store_true", help="成片有人声/配音")
     g2.add_argument("--no-voice", action="store_true", help="成片没有人声")
     ap.add_argument("--out", help="报告和预览图目录（默认：成片旁边的 <成片名>_qa/）")
+    ap.add_argument("--allow-solid-bg", action="store_true", help="风格本身就是纯色大底（动态排版快切），不查「画面空不空」")
+    ap.add_argument("--fixed-layout", action="store_true", help="风格本身就是固定界面（交互网页录屏、说明书），不查「构图变化」「每秒变化」")
     args = ap.parse_args()
     v = os.path.abspath(args.video)
     if not os.path.exists(v):
@@ -195,13 +200,18 @@ def main():
 
     cs = compose_scan(v, dur)
     if cs:
+        if args.allow_solid_bg:
+            cs["empty_share_raw"], cs["empty_share"] = cs["empty_share"], 0.0
+        if args.fixed_layout:
+            cs["layout_sim_raw"], cs["adjacent_sim_raw"] = cs["layout_sim"], cs["adjacent_sim"]
+            cs["layout_sim"], cs["adjacent_sim"] = None, 0.0
         add("画面空不空", WARN if cs["empty_share"] >= 0.5 else PASS,
-            f"{cs['empty_share']:.0%} 的帧有一半以上面积是同一种底色" + ("：大片留白或空底上摆卡片，把主体放大、画面铺满场景" if cs["empty_share"] >= 0.5 else ""))
+            ("按风格放过（纯色大底）" if args.allow_solid_bg else f"{cs['empty_share']:.0%} 的帧有一半以上面积是同一种底色") + ("：大片留白或空底上摆卡片，把主体放大、画面铺满场景" if cs["empty_share"] >= 0.5 else ""))
         if cs["layout_sim"] is not None:
             add("构图变化", WARN if cs["layout_sim"] > 0.45 else PASS,
                 f"相隔 3 秒以上的画面平均相似度 {cs['layout_sim']:.2f}（>0.45 算雷同）" + ("：各镜头版式重复、机位不变，换景别和角度" if cs["layout_sim"] > 0.45 else ""))
         add("每秒变化", WARN if cs["adjacent_sim"] > 0.82 else PASS,
-            f"相邻两秒画面平均相似度 {cs['adjacent_sim']:.2f}（>0.82 算太少）" + ("：像幻灯片翻页或一直同一个机位，加相机运动和镜头切换" if cs["adjacent_sim"] > 0.82 else ""))
+            ("按风格放过（固定界面）" if args.fixed_layout else f"相邻两秒画面平均相似度 {cs['adjacent_sim']:.2f}（>0.82 算太少）") + ("：像幻灯片翻页或一直同一个机位，加相机运动和镜头切换" if cs["adjacent_sim"] > 0.82 else ""))
 
     au, bc = None, None
     if info["has_audio"]:

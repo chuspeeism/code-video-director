@@ -35,12 +35,12 @@ description: 用代码做视频的导演流程。动画短片、MV、绘本动�
 |---|---|---|
 | 1 | **拆需求，写导演单**：照 `references/01-导演单模板.md` 填。先抄用户原话里的硬要求，再写风格元素清单、内容核心、声音方案、规格、禁止项、验收标准 | `docs/导演单.md` |
 | 2 | **选路线、备工具**：按下面「三、路线怎么选」定实现路径，读对应参考文件；先把环境跑通（渲一帧试试），别等写完一大堆代码才发现装不上 | 能渲出第一帧 |
-| 3 | **声音先行**：音乐跑 `scripts/beats.py` 拿 BPM、拍点、高潮点；旁白先写稿、逐句合成、量时长。细节读 `references/05-声音.md` | `audio/`、`docs/节拍.json` |
+| 3 | **声音先行**：音乐跑 `scripts/beats.py` 拿 BPM、拍点、高潮点；要卡点就跑 `scripts/beat_timeline.py` 直接出镜头时间表；旁白先写稿、逐句合成、量时长。细节读 `references/05-声音.md` | `audio/`、`docs/节拍.json`、`docs/timeline.json` |
 | 4 | **分镜时间轴**：每个镜头写清起止时刻、对应的拍点或旁白句、主任务（观众此刻该看什么）、主体 / 次主体 / 背景、进出场方式。读 `references/06-运动与镜头.md` | `docs/分镜.md`、`timeline.json` |
 | 5 | **搭画面**：网页路线从 `templates/engine.html` 起步；三维、Blender、生图各有参考文件。先把风格的「材质层」做出来（纸纹、墨线、颗粒、光），再做动画 | 页面或工程 |
 | 6 | **静帧自查**：`node scripts/render.mjs <页面> --out out --stills 1,4,8,…`，看拼图，按「四、评分表」打分，<8 分的项先修 | `out/stills/sheet.jpg` |
 | 7 | **全片渲染、混音、合成**：`render.mjs` 全片渲染（可加 `--workers 4`）；混音按 `references/05-声音.md`；ffmpeg 合成 | `成片.mp4` |
-| 8 | **成片自检、返工**：`python3 scripts/qa.py 成片.mp4 …`，看联系表和手机尺寸图，逐项打分，修掉最差 3 个问题，重渲受影响的秒数。**「画面空不空」「构图变化」「每秒变化」这三项报警告，必须改到通过再交付** | `qa/` 报告 |
+| 8 | **成片自检、返工**：`python3 scripts/qa.py 成片.mp4 …`，看联系表和手机尺寸图，逐项打分，修掉最差 3 个问题，重渲受影响的秒数。**「画面空不空」「构图变化」「每秒变化」这三项报警告，必须改到通过再交付**（只有纯色大底的动态排版、固定界面的网页录屏和说明书可以用开关放过，见 `references/08-自检与评分.md`） | `qa/` 报告 |
 | 9 | **交付说明**：做法、素材和声音来源（版权）、自检结果、没做好的地方 | `交付说明.md` |
 
 时间紧时可以压缩每一步，但 **3（声音先行）、6（静帧自查）、8（成片自检）不能省**。
@@ -86,6 +86,7 @@ description: 用代码做视频的导演流程。动画短片、MV、绘本动�
   - 全片：`node <skill>/scripts/render.mjs page.html --out out --w 1920 --h 1080 --fps 30 --dur 60 --workers 4 --audio audio/mix.wav --name 成片.mp4`
   - 中断后重跑会跳过已渲好的帧；改了某几秒，删掉对应帧再跑。
 - `scripts/beats.py`：`python3 <skill>/scripts/beats.py 歌.mp3 --json docs/节拍.json`，输出 BPM、拍点、小节重拍、高潮候选。
+- `scripts/beat_timeline.py`：**卡点片必用**。`python3 <skill>/scripts/beat_timeline.py 歌.mp3 --film-dur 60 --key 33 --out docs/timeline.json`：`--key` 是片子里最重要那一刻（反转、变身、亮相）的秒数，它会算出歌从第几秒开始放，让高潮正好砸在这一刻；再按拍点排好每个镜头的起止（安静段每小节一刀、响亮段每拍一刀，字多的段落用 `--loud-every 2`），给出裁歌命令。画面按这张表的镜头去做。
 - `scripts/qa.py`：`python3 <skill>/scripts/qa.py 成片.mp4 --expect-size 1920x1080 --expect-dur 60 --music --no-voice --out qa`，输出联系表、手机尺寸图和逐项检查。
 
 脚本依赖：Node 18+、ffmpeg、Python 3 + numpy。缺什么先装什么。

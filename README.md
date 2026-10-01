@@ -33,7 +33,8 @@ SKILL.md                 主流程和硬规则（模型先读这个）
 references/              导演单模板、三条实现路线、声音、运动与镜头、风格卡、自检评分、翻车清单
 scripts/render.mjs       把 seek(t) 网页渲成视频（静帧拼图 / 全片 / 并行 / 断点续渲）
 scripts/beats.py         测 BPM、拍点、小节重拍、高潮点
-scripts/qa.py            成片自检：规格、黑帧、冻结、静音、响度、切点落拍、联系表
+scripts/beat_timeline.py 卡点片的镜头时间表：高潮对准最重要的画面，按拍点排好每个镜头
+scripts/qa.py            成片自检：规格、黑帧、冻结、构图（空底、雷同、变化）、静音、响度、切点落拍、联系表
 templates/engine.html    seek(t) 网页模板
 ```
 
