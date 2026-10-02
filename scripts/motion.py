@@ -38,6 +38,9 @@ REP_GRID = (8, 5)        # 画面分 8×5 格，每格单独看
 REP_CHANGE = 0.04        # 格子里的画面要明显变过（灰度平均差 ≥ 0.04）才算「在演」
 REP_SCORE = 0.6          # 隔一个周期，格子里的画面差比之前最大时小六成以上，算「回到原样」
 REP_AREA = 0.15          # 一窗里 15% 以上的格子在重播，这一窗算「画面在重播」
+# 主辅分工（《七层动效手册》）：每帧 1 个主动作（明显动作面积 ≥ 2%）+ 辅动作（镜头在动、额外的快东西、原地小幅循环三层里有几层）
+AUX_THIN = 2.0           # 一个镜头里每帧平均不到 2 层辅动作，算「辅层偏薄」
+EMPTY_SHOT = 0.10        # 一个镜头里一成以上的帧什么都没在动（没有主动作、也没有辅动作），算「成段全空」
 
 
 # ---------- 读帧 ----------
@@ -514,6 +517,31 @@ def action_shape(segs):
     }
 
 
+def frame_layers(ser, i):
+    """一帧的主辅分工：(有没有主动作, 辅动作几层)。主动作 = 明显动作面积 ≥ 2%；辅动作 = 镜头在动、额外的快东西（明显动作 ≥ 2 块）、原地小幅循环（≥ 2%）。"""
+    if ser["cut"][i] or ser["act_area"][i] is None:
+        return None
+    main = ser["act_area"][i] >= 0.02
+    aux = int(ser["cam"][i] > CAM_MOVE) + int(ser["act_blobs"][i] >= 2) + int(ser["wob_area"][i] >= 0.02)
+    return main, aux
+
+
+def shot_layers(ser, min_len=1.0):
+    """按镜头看辅层：[(起秒, 止秒, 每帧辅层平均, 全空帧占比)]，只看 ≥ 1 秒的镜头。"""
+    t, cut = ser["t"], ser["cut"]
+    out, cur = [], []
+    for i in range(len(t) + 1):
+        if i == len(t) or cut[i]:
+            if cur and t[cur[-1]] - t[cur[0]] >= min_len:
+                f = [x for x in (frame_layers(ser, j) for j in cur) if x]
+                if f:
+                    out.append((t[cur[0]], t[cur[-1]], float(np.mean([a for m, a in f])), float(np.mean([(not m) and a == 0 for m, a in f]))))
+            cur = []
+        else:
+            cur.append(i)
+    return out
+
+
 def summarize(ser, segs, fps, n, D):
     valid = [i for i, c in enumerate(ser["cut"]) if not c and ser["act_blobs"][i] is not None]
     g = lambda key: np.array([ser[key][i] for i in valid], float)
@@ -559,6 +587,7 @@ def summarize(ser, segs, fps, n, D):
         return bool(idx) and (np.mean([ser["act_area"][j] for j in idx]) >= 0.01 or np.mean([ser["cam"][j] for j in idx]) > CAM_MOVE)
     m2m = sum(1 for c in cuts if moving_at(c - w, c) and moving_at(c + 1, c + 1 + w))
     P = lambda x: pct(x) if x is not None else None
+    sl = shot_layers(ser)
     return {
         "时长秒": round(D, 1), "帧率": round(fps, 2), "分析帧数": int(n), "硬切": len(cuts),
         "明显动作_同屏块数": round(float(blobs_.mean()), 2) if len(blobs_) else 0,
@@ -579,6 +608,8 @@ def summarize(ser, segs, fps, n, D):
         "两头都缓_占比%": P(sum(1 for s in both if s["head"] == "缓入" and s["tail"] == "缓出") / len(both)) if both else None,
         "匀速动作_占比%": P(sum(1 for s in segs if s["uniform"]) / len(segs)) if segs else None,
         "转场动接动_占比%": P(m2m / len(cuts)) if cuts else None,
+        "辅层偏薄的镜头_占比%": P(sum(a < AUX_THIN for _, _, a, _ in sl) / len(sl)) if sl else None,
+        "成段全空的镜头_占比%": P(sum(e > EMPTY_SHOT for _, _, _, e in sl) / len(sl)) if sl else None,
         **action_shape(segs),
     }
 

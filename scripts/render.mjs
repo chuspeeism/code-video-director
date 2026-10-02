@@ -4,7 +4,7 @@
 //
 // 用法：node render.mjs <page.html> --out <目录> [--w 1920 --h 1080 --fps 30 --dur 秒]
 //         [--stills 1,5.5,9] [--from 0 --to 60] [--workers 4] [--sub 1] [--audio mix.wav]
-//         [--name video.mp4] [--force]
+//         [--name video.mp4] [--layers 1,2] [--force]
 // 页面约定：
 //   window.seek = async (t) => {...}   t 单位秒，画面只由 t 决定（不许用定时器、CSS 过渡/动画）
 //   window.ready = true                字体、图片等资源加载完后再设
@@ -24,11 +24,12 @@ import { spawnSync } from 'node:child_process';
 const FF = process.env.FFMPEG || 'ffmpeg';
 const USAGE = `用法：node render.mjs <page.html> --out <目录> [--w 1920 --h 1080 --fps 30 --dur 秒]
         [--stills 1,5.5,9] [--from 0 --to 60] [--workers 4] [--sub 1] [--audio mix.wav]
-        [--name video.mp4] [--force]
+        [--name video.mp4] [--layers 1,2] [--force]
   --stills  只渲这几个时刻的静帧（秒，逗号分隔），拼成 <out>/stills/sheet.jpg，不出视频
   --from/--to  只渲这段时间（秒）    --workers  并行页面数    --sub K  每帧 K 个子帧做动态模糊
-  --audio   把音频合进成片（以视频时长为准，音频短了补静音）    --force  已有的帧也重渲`;
-const VALUE_KEYS = ['out', 'w', 'h', 'fps', 'dur', 'stills', 'from', 'to', 'workers', 'sub', 'audio', 'name'];
+  --audio   把音频合进成片（以视频时长为准，音频短了补静音）    --force  已有的帧也重渲
+  --layers  只画这几层（分步实现用：页面按 ?layers=1,2 决定画哪几层；每一遍出到自己的 --out 目录）`;
+const VALUE_KEYS = ['out', 'w', 'h', 'fps', 'dur', 'stills', 'from', 'to', 'workers', 'sub', 'audio', 'name', 'layers'];
 
 function die(msg) { console.error('[错误] ' + msg); process.exit(1); }
 const fmt = (s) => (s < 90 ? `${s.toFixed(1)} 秒` : `${Math.floor(s / 60)} 分 ${Math.round(s % 60)} 秒`);
@@ -231,7 +232,7 @@ async function main() {
   fs.mkdirSync(out, { recursive: true });
   const { pw, name: pwName } = loadPlaywright();
   const srv = await startServer(path.dirname(pagePath)).catch((e) => die(e.message));
-  const url = `http://127.0.0.1:${srv.address().port}/${encodeURIComponent(path.basename(pagePath))}?render=1`;
+  const url = `http://127.0.0.1:${srv.address().port}/${encodeURIComponent(path.basename(pagePath))}?render=1${o.layers ? '&layers=' + encodeURIComponent(o.layers) : ''}`;
   const { browser, kind } = await launchBrowser(pw);
   const errs = new Set();
   let code = 0;
@@ -260,7 +261,7 @@ async function main() {
       const frameDir = path.join(out, K === 1 ? 'frames.noindex' : `frames_sub${K}.noindex`);  // .noindex：macOS 的 Spotlight 不去索引成千上万张帧
       fs.mkdirSync(frameDir, { recursive: true });
       const metaFile = path.join(frameDir, 'meta.json');
-      const meta = { w: o.w, h: o.h, fps: o.fps, sub: K, page: path.basename(pagePath), hash: pageHash(pagePath) };
+      const meta = { w: o.w, h: o.h, fps: o.fps, sub: K, page: path.basename(pagePath), hash: pageHash(pagePath), layers: o.layers || null };
       let force = o.force;
       try {
         const old = JSON.parse(fs.readFileSync(metaFile, 'utf8'));

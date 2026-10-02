@@ -154,6 +154,43 @@ const perFrame = (t, start, arr, fps = 30) => { const u = (t - start) * fps; if 
 const ramp = (i, a, b, n) => lerp(a, b, n > 1 ? i / (n - 1) : 1);
 // 高潮写成事件表，例：const HITS = [ev(27, 1), ev(27, 2), ev(28, 1), ev(28, 1.5)];   // 冲刺、双剑相交、反色、X 斩痕，各一次
 //                   const sh = HITS.reduce((s, h, i) => s + shake(t, h, ramp(i, 24, 56, HITS.length)), 0);
+// ===== 分步实现：三层骨架 + 共用事件表（第一遍主动作 → 第二遍辅层 → 第三遍冲击，每遍量过就锁住，见 references/11-分步实现与锁层.md） =====
+// 页面按 ?layers=1,2 只画这几层（render.mjs --layers 1,2）；不带参数就三层全开。三层分文件写（比如 main.js、aux.js、impact.js），锁层按文件锁。
+const LAYERS = new Set((new URLSearchParams(location.search).get('layers') || '1,2,3').split(',').map(Number));
+// 共用事件表：第一遍定下来、锁住。at 哪一刻（用 ev() 写拍点）、kind 什么事、hit 是不是重击（第三遍只给 hit 的事件加冲击）、x/y 发生在哪、power 多重（冲击逐级加码用）
+const EVENTS = [
+  // { at: ev(3, 1), kind: '变身', hit: true, x: 960, y: 540, power: 1 },
+];
+const hits = (t, win = 0.6) => EVENTS.filter((e) => e.hit && t >= e.at && t < e.at + win);   // 冲击层取用：刚发生的重击
+// 画的时候按层：if (LAYERS.has(1)) drawMain(t); if (LAYERS.has(2)) drawAux(t); if (LAYERS.has(3)) drawImpact(t);
+// 镜头也分层：缓推、跟摇属于辅层（第二遍），顿推、震屏属于冲击层（第三遍）——cam.s = push(...) * (1 + (LAYERS.has(3) ? punch(...) : 0))
+// 冲击叠层（Opus 5.5 重击的写法）：同一帧爆开白闪 flash()、震屏 shake()、顿推 punch()、拟声大字 sfx()、一圈碎片火花 burst()、速度线。
+// 主动作只要三四帧，画面的热闹来自这些同时炸开、各自飞走的伴奏层——快和热闹不打架。
+// burst：一圈碎片 / 火花从 (x, y) 炸开、先快后慢飞远并下落；返回每片 [x, y, 大小, 透明度]，自己画成方块、火花线或纸屑
+function burst(t, hit, x, y, { n = 24, dist = 360, size = 14, life = 0.45, grav = 900, seed = 1 } = {}) {
+  const dt = t - hit; if (dt < 0 || dt > life) return [];
+  const r = mulberry32(seed), k = E.outQuart(dt / life), out = [];
+  for (let i = 0; i < n; i++) {
+    const a = r() * Math.PI * 2, d = dist * (0.4 + 0.6 * r()), s = size * (0.5 + r());
+    out.push([x + Math.cos(a) * d * k, y + Math.sin(a) * d * k + 0.5 * grav * dt * dt, s * (1 - 0.5 * dt / life), 1 - dt / life]);
+  }
+  return out;
+}
+// sfx：拟声大字（「锵！」「斩！」「轰！」）砸进来 0.1 秒（从 1.6 倍缩回、带一点旋转），停 0.35 秒，0.15 秒淡出；返回 {s, rot, a}，自己画（粗描边 + 填色）
+const sfx = (t, hit, { inDur = 0.1, hold = 0.35, out = 0.15, rot = -0.12 } = {}) => {
+  const dt = t - hit; if (dt < 0 || dt > inDur + hold + out) return null;
+  const p = E.outBack(Math.min(1, dt / inDur));
+  return { s: lerp(1.6, 1, p), rot: rot * (1 - 0.3 * p), a: dt < inDur + hold ? 1 : 1 - (dt - inDur - hold) / out };
+};
+// 辅层（《七层动效手册》的主辅分工）：每个镜头 1 个快主动作 + 至少 3 层辅动作。辅动作小幅、小面积、可以循环、不抢注意力；主动作必须是一次性的事件。
+// 安静镜头（对话、分食、包扎）最容易空：镜头匀速缓推 push() + 一层真的在走的粒子 drift() + 一两样小东西小摆 sway()，三层托住画面。
+// sway：小东西原地小摆（烛火、斗篷角、旗子、叶子），幅度 1–3 像素或 1–3 度，周期 1.2–3.4 秒；每样 phase 错开，别整排一起晃
+const sway = (t, amp = 2, period = 2.2, phase = 0) => amp * Math.sin(2 * Math.PI * (t / period + phase));
+// drift：第 i 颗粒子真的在走（飘落的灰 speed>0、上升的火星 speed<0、雨丝），匀速穿过 dist 像素再从头来，各颗起点不同；返回 [x, y]
+function drift(t, i, { x0 = 0, y0 = 0, w = W, dist = H, speed = 60, wob = 6, seed = 3 } = {}) {
+  const r = mulberry32(seed + i * 7919), x = x0 + r() * w, off = r() * dist;
+  return [x + wob * Math.sin(t * 0.8 + i), y0 + (((off + t * speed) % dist) + dist) % dist];
+}
 // 别写 const q = t % 0.78; slash(q)——那是同一刀每拍重播一遍。t % 周期 只许用在眨眼、冒汗、火星、速度线闪动、滚动背景这类背景小效果。
 
 // ===== 动作的三个现成写法（不要用 inOutCubic 做物体动作，更不要用 linear） =====
