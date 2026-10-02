@@ -171,12 +171,77 @@ def compose_scan(path, dur):
             "adjacent_sim": round(float(np.mean(adj)), 3), "samples": n}
 
 
+# ---------- 动态检查（逐帧光流，scripts/motion.py） ----------
+# 门槛按 Opus 5.5 原片实测定的：科学讲解、AI 素材包装、魔塔 MV、四渡赤水四条原片全部能过（见 references/08-自检与评分.md「动态检查」）
+MOTION_RULES = {
+    "动作最快速度_中位px每秒": (">=", 350, "动作太慢：主要动作最快时至少每秒 350 像素（1920 宽），0.25–0.5 秒做完、位移拉大"),
+    "动作速度_快的那10%": (">=", 170, "画面里最快的那些东西也不够快：加从画外飞入、冲刺、砸下这类快动作，别全是慢慢挪"),
+    "快起慢停_占比%": (">=", 15, "快起慢停的动作太少：入场用 beat()、小东西用 pop()、大东西用 travel()，一下冲出去再软着陆"),
+    "慢起慢停_占比%": ("<=", 60, "两头对称的慢进慢出太多，显得软、飘：inOutCubic 只给镜头用，物体动作改用 beat()、drop()、pop()"),
+    "动作用时_中位秒": ("<=", 0.8, "动作拖：一个动作 0.25–0.5 秒做完（入场、走位、弹出、落下），超过 0.6 秒的只留给镜头运动"),
+    "原地晃动_面积%": ("<=", 15, "一直在晃：漂浮、上下浮动这类原地小晃面积太大，它只能当底噪（幅度 ≤ 画面高 1%），换成从 A 到 B 的动作"),
+    "镜头在动_占比%": ("<=", 90, "镜头一直在动：推完要停，让动作在静止的镜头里发生；不要每个镜头从头推到尾"),
+    "动作长短变化": (">=", 0.6, "每个动作一个样（时长都差不多）：按动作类型挑写法——砸下 drop 0.1–0.13 秒、入场 beat 0.3 秒、小东西 pop 0.2 秒、大东西走位 0.5–0.7 秒"),
+    "一帧冲到全速_占比%": ("<=", 35, "起步太猛、没有加速过程：入场用 beat()（先预备一下再冲），砸下用 drop()（先慢后快、到点急停），别所有动作都从全速开始"),
+    "画面重播_占比%": ("<=", 2, "画面在重播：同一个动作每拍播一遍（t % 周期 写的主动作、顿推）。按拍点写成一串只发生一次的事件（ev()），高潮每 2.4 秒至少 5 件不同的事，同类冲击逐级加码（ramp()）；t % 周期 只给眨眼、粒子、滚动背景"),
+}
+
+
+# 片子路子：MV、卡点、打斗这类一直热闹的片子，再加四条下限（按魔塔 MV、「眩晕」两条原片定，两条都能过：镜头 74%/39%、空档 11%/3%、在动面积 22%/18%、最长停顿 0.2 秒）
+STYLE_RULES = {
+    "mv": {
+        "镜头在动_占比%": (">=", 35, "MV 镜头太静：两拍之间匀速慢推 push()，重拍上 punch() 顿推、甩镜头 whip() 转场、打斗跟着动作摇，镜头在动的时间不低于三成半"),
+        "没有明显动作_占比%": ("<=", 20, "空档太多：MV 里任何时刻都要有东西在演，动作之间最多停 0.2–0.5 秒；加一次性的伴奏事件（怪物从画外冲上来、碎片炸开、背景层滑过），别用循环晃动填空档"),
+        "明显动作_面积%": (">=", 12, "在动的面积太小：动作要大，冲刺、飞入、砸地要占画面一大块，特效层（速度线、闪光、冲击波）铺开"),
+        "最长没动作秒": ("<=", 1.0, "有一段超过 1 秒什么都没在动：补动作或切镜头"),
+    },
+}
+
+
+def motion_check(v, out_dir, add, style=None):
+    here = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, here)
+    import motion
+    summ, ser, segs = motion.analyze(v)
+    rep = motion.repeats(v)                       # 画面在重播：扣掉镜头之后，隔固定时间画面又回到原样
+    summ = {**summ, "画面重播_占比%": rep["画面重播_占比%"]}
+    with open(os.path.join(out_dir, "motion.json"), "w", encoding="utf-8") as f:
+        json.dump({"summary": summ, "series": ser, "segments": segs, "repeats": rep}, f, ensure_ascii=False)
+    rules = {**MOTION_RULES, **STYLE_RULES.get(style or "", {})}
+    for key, (op, thr, fix) in rules.items():
+        val = summ.get(key)
+        if val is None:
+            add(key.split("_")[0], PASS, "量不出（完整的动作太少）")
+            continue
+        good = val >= thr if op == ">=" else val <= thr
+        unit = " 像素/秒" if (key.endswith("px每秒") or key == "动作速度_快的那10%") else ("%" if key.endswith("%") else ("秒" if key.endswith("秒") else ""))
+        name = {"动作最快速度": "动作快不快", "动作速度": "快动作够不够", "动作长短变化": "动作有长有短", "一帧冲到全速": "起步有加速",
+                "没有明显动作": "空档", "明显动作": "在动的面积", "最长没动作秒": "最长停顿", "画面重播": "画面在重播"}.get(key.split("_")[0] if "_" in key else key, key.split("_")[0])
+        add(name, PASS if good else WARN,
+            (f"{key.split('_')[0]}（{key.split('_')[1].replace('px每秒', '')}）" if "_" in key else key) + f"= {val}{unit}（要求 {op} {thr}{unit}）" + ("" if good else "：" + fix))
+    # 逐帧条：开头 2.4 秒、最热闹的 2.4 秒，每格 0.2 秒——自己数同屏有几样东西在做「从 A 到 B」的动作，少于 3 样就返工
+    t = ser["t"]; a = ser["act_area"]
+    best, bt = -1, 0.0
+    for i in range(len(t)):
+        win = [x for x, tt in zip(a[i:], t[i:]) if tt < t[i] + 2.4 and x is not None]
+        if win and sum(win) > best:
+            best, bt = sum(win), t[i]
+    strips = {}
+    for name, st in (("逐帧条_开头", 0.0), ("逐帧条_最热闹", bt)):
+        p = os.path.join(out_dir, name + ".jpg")
+        run([tool("ffmpeg"), "-v", "error", "-y", "-ss", f"{st:.2f}", "-t", "2.4", "-i", v, "-vf",
+             "fps=5,scale=480:-2,tile=4x3:padding=4:color=white", "-frames:v", "1", p])
+        strips[name] = p if os.path.exists(p) else None
+    add("同屏几样在动", PASS, "看「逐帧条_开头.jpg」「逐帧条_最热闹.jpg」（每格 0.2 秒）：数一数同时在做「从 A 到 B」动作的东西，少于 3 样就返工")
+    return summ, strips
+
+
 def run_bytes(args):
     return subprocess.run(args, capture_output=True).stdout
 
 
 def main():
-    ap = argparse.ArgumentParser(description="成片自检：规格、黑帧、冻帧、静音、响度、卡拍、联系表")
+    ap = argparse.ArgumentParser(description="成片自检：规格、黑帧、冻帧、构图、动态（动作快慢、起停、原地晃、镜头）、静音、响度、卡拍、联系表")
     ap.add_argument("video")
     ap.add_argument("--expect-size", help="期望尺寸，如 1920x1080")
     ap.add_argument("--expect-dur", type=float, help="期望时长（秒）")
@@ -188,6 +253,8 @@ def main():
     ap.add_argument("--out", help="报告和预览图目录（默认：成片旁边的 <成片名>_qa/）")
     ap.add_argument("--allow-solid-bg", action="store_true", help="风格本身就是纯色大底（动态排版快切），不查「画面空不空」")
     ap.add_argument("--fixed-layout", action="store_true", help="风格本身就是固定界面（交互网页录屏、说明书），不查「构图变化」「每秒变化」")
+    ap.add_argument("--style", choices=["mv"], help="片子路子：mv = MV、卡点、打斗这类一直热闹的片子，动态检查再加镜头、空档、在动面积、最长停顿四条下限")
+    ap.add_argument("--skip-motion", action="store_true", help="跳过动态检查（逐帧光流，60 秒成片要两三分钟）。只在反复调同一处时用，交付前必须跑")
     args = ap.parse_args()
     v = os.path.abspath(args.video)
     if not os.path.exists(v):
@@ -283,12 +350,18 @@ def main():
                 add("卡拍", PASS if good else WARN, f"BPM≈{bc['bpm']:.1f}；{bc['on_beat']}/{len(cuts)} 个切点落在拍点 ±80 毫秒内"
                     f"（{bc['ratio']:.0%}），随便切的期望约 {bc['random_expect']:.0%}{drop}")
 
+    ms, strips = None, {}
+    if not args.skip_motion:
+        try:
+            ms, strips = motion_check(v, out_dir, add, args.style)
+        except Exception as e:  # 动态分析失败不影响其它检查
+            add("动态检查", WARN, f"没跑成：{e}")
     imgs = {"联系表": sheet(v, os.path.join(out_dir, "联系表.jpg"), 2, 6, 320, dur),
-            "手机尺寸": sheet(v, os.path.join(out_dir, "手机尺寸.jpg"), 1, 5, 360, dur)}
+            "手机尺寸": sheet(v, os.path.join(out_dir, "手机尺寸.jpg"), 1, 5, 360, dur), **strips}
     nf, nw = sum(i["status"] == FAIL for i in items), sum(i["status"] == WARN for i in items)
     verdict = f"不通过（{nf} 项不通过，{nw} 项警告）" if nf else (f"有 {nw} 项警告" if nw else "全部通过")
     report = {"file": v, "spec": info, "verdict": verdict, "items": items, "blacks": blacks, "freezes": freezes,
-              "cuts": cuts, "compose": cs, "audio": au, "beats": bc, "images": imgs}
+              "cuts": cuts, "compose": cs, "audio": au, "beats": bc, "motion": ms, "images": imgs}
     rp = os.path.join(out_dir, "qa_report.json")
     with open(rp, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)

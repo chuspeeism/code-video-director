@@ -70,7 +70,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #0c0c0c; }
     <p class="abs sub" id="sub" style="left:140px; top:712px" data-gap=".26em">Every frame is a <em>pure function</em> of time.</p>
 
     <div class="abs" id="block">
-      <div class="abs tag">SPRING · f 1.5 · ζ 0.42</div>
+      <div class="abs tag">SPRING · f 2.6 · ζ 0.5</div>
       <div class="abs glyph" id="glyph">f(t)</div>
     </div>
     <div class="abs axis" id="axisTitle" style="left:1180px; top:956px">spring(τ) · τ = 0 → 3 s</div>
@@ -91,6 +91,10 @@ const E = {
   linear: ends((x) => x),
   inOutCubic: ends((x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2)),
   outCubic: ends((x) => 1 - Math.pow(1 - x, 3)),
+  outQuart: ends((x) => 1 - Math.pow(1 - x, 4)),             // 先快后慢（抢拍：前两帧走完七成）
+  inCubic: ends((x) => x * x * x),                            // 先慢后快、终点最快、到点急停：砸下、落地、离场用
+  inQuad: ends((x) => x * x),
+  outQuint: ends((x) => 1 - Math.pow(1 - x, 5)),
   outBack: ends((x) => 1 + 2.70158 * Math.pow(x - 1, 3) + 1.70158 * Math.pow(x - 1, 2)),
   outExpo: ends((x) => 1 - Math.pow(2, -10 * x)),
 };
@@ -108,6 +112,57 @@ function springTo(t, keys, f = 3, z = 0.6) {
   for (let i = 1; i < keys.length; i++) v += (keys[i][1] - keys[i - 1][1]) * spring(t - keys[i][0], f, z);
   return v;
 }
+// ===== Opus 5.5 的运动词汇（参数取自 Opus 5.5 代码里的原值，按动作类型挑，不要所有动作一个写法） =====
+// bump：落定后的阻尼振荡——冲过头再来回弹两三下、越弹越小。amp 幅度（3%–10%），f 频率（2.4–3.2 赫兹），k 衰减（5.5–9 /秒）
+const bump = (dt, amp, f = 2.6, k = 7) => (dt <= 0 ? 0 : amp * Math.exp(-k * dt) * Math.sin(2 * Math.PI * f * dt));
+// squash：落地那一帧压扁 amount（5%–16%），按 0.05 秒指数弹回（两三帧）。用法：sy = 1 - squash(t - hit)，sx = 1 + 0.5 * squash(t - hit)
+const squash = (dt, amount = 0.1, tau = 0.05) => (dt < 0 ? 0 : amount * Math.exp(-dt / tau));
+// beat：入场四拍——预备 pre 秒先反向退 back → 主动作 dur 秒先快后慢 → 冲过头 over、弹两三下稳住。返回进度（会短暂 <0、>1）
+function beat(t, start, { pre = 0.1, dur = 0.3, back = 0.05, over = 0.08, f = 2.6, k = 7 } = {}) {
+  const t1 = start + pre, t2 = t1 + dur;
+  if (t < start) return 0;
+  if (t < t1) return -back * E.outCubic(seg(t, start, t1));
+  if (t < t2) return -back + (1 + back) * E.outCubic(seg(t, t1, t2));
+  return 1 + bump(t - t2, over, f, k);
+}
+// drop：砸下——fall 秒（3–4 帧）先慢后快砸到位，终点最快、到点急停，落地后回弹。配 squash(t - (start + fall)) 和冲击三件套
+function drop(t, start, { fall = 0.12, over = 0.06, f = 2.4, k = 9 } = {}) {
+  const hit = start + fall;
+  if (t < start) return 0;
+  if (t < hit) return E.inCubic(seg(t, start, hit));
+  return 1 - bump(t - hit, over, f, k);
+}
+// 冲击三件套（砸下、出拳、亮相那一刻）：白闪 1–3 帧 + 震屏 3–8 帧 + 镜头顿推
+const flash = (t, hit, dur = 0.08) => { const u = (t - hit) / dur; return u < 0 || u > 1 ? 0 : 1 - u; };          // 白色叠层的透明度
+const shake = (t, hit, px = 14, dur = 0.25, fps = 30) => { const u = (t - hit) / dur; if (u < 0 || u > 1) return 0;
+  return px * (1 - u) * (1 - u) * (Math.round((t - hit) * fps) % 2 ? -1 : 1); };                                     // 隔帧反向、平方衰减
+const punch = (t, hit, amp = 0.05, dur = 0.2) => { const u = (t - hit) / dur; return u < 0 || u > 1 ? 0 : amp * (1 - u) * (1 - u); }; // 镜头推近 4%–10% 再回
+// 镜头：两拍之间匀速慢推（Opus 的写法：慢推一律匀速，两头速度为零的缓动会让画面「定格」）；转场用甩镜头
+const push = (t, a, b, s0 = 1, s1 = 1.04) => lerp(s0, s1, seg(t, a, b));                     // a→b 秒匀速从 s0 推到 s1
+const whip = (t, at, dur = 0.14, dist = 1400) => { const u = (t - at) / dur; return u < 0 || u > 1 ? 0 : dist * E.inOutCubic(u); }; // 甩镜头：0.14 秒横移，配方向模糊
+// 用法速查（时长要有长有短）：砸下 drop 0.1–0.13 秒｜入场 beat 0.3 秒｜轻的小东西 pop 0.2–0.3 秒｜大东西走位 travel 0.5–0.7 秒｜镜头慢推匀速或 punch
+// 一组东西错开 1–2 帧（after 的 gap 0.03–0.06）；同一个东西的大小比位置晚 0.06 秒、旋转再晚一点；原地晃只留 1–3 像素
+
+// ===== 按事件写，不按周期写（Opus 5.5 魔塔原片的写法）：每件事钉在一个拍点上、只发生一次 =====
+// 拍点网格：bpm、offset（第 1 小节第 1 拍在片中第几秒）、每小节几拍，按 beats.py / beat_timeline.py 的结果改这一行
+const GRID = { bpm: 120, offset: 0, bar: 4 };
+const ev = (bar, b = 1) => GRID.offset + ((bar - 1) * GRID.bar + (b - 1)) * 60 / GRID.bpm;   // ev(27, 2) = 第 27 小节第 2 拍；半拍写 ev(28, 1.5)
+// 逐帧关键帧表：把关键动作每一帧的进度写死，加速度就是你写出来的。Opus 挥剑：[0, .08, .18, .3, .62, 1]——前 3 帧慢慢蓄力、后 2 帧猛挥到位
+const perFrame = (t, start, arr, fps = 30) => { const u = (t - start) * fps; if (u <= 0) return arr[0];
+  if (u >= arr.length - 1) return arr[arr.length - 1]; const i = Math.floor(u); return lerp(arr[i], arr[i + 1], u - i); };
+// 逐级加码：同一类冲击第 i 次（共 n 次）从 a 加到 b。Opus 一连几次重击：震屏 24 → 34 → 40 → 56 像素、红蓝错位 8 → 10 → 14 → 16
+const ramp = (i, a, b, n) => lerp(a, b, n > 1 ? i / (n - 1) : 1);
+// 高潮写成事件表，例：const HITS = [ev(27, 1), ev(27, 2), ev(28, 1), ev(28, 1.5)];   // 冲刺、双剑相交、反色、X 斩痕，各一次
+//                   const sh = HITS.reduce((s, h, i) => s + shake(t, h, ramp(i, 24, 56, HITS.length)), 0);
+// 别写 const q = t % 0.78; slash(q)——那是同一刀每拍重播一遍。t % 周期 只许用在眨眼、冒汗、火星、速度线闪动、滚动背景这类背景小效果。
+
+// ===== 动作的三个现成写法（不要用 inOutCubic 做物体动作，更不要用 linear） =====
+// 走位：从 a 到 b，默认 0.4 秒、快起慢停。要冲过头再回来就用 ease: E.outBack。一个动作 0.25–0.5 秒做完。
+const travel = (t, start, a, b, { dur = 0.4, ease = E.outQuart } = {}) => lerp(a, b, ease(seg(t, start, start + dur)));
+// 弹出：0 → 1 带一点过冲，出现、放大、落位都用它（0.3–0.4 秒）
+const pop = (t, start, dur = 0.35) => E.outBack(seg(t, start, start + dur));
+// 依次：一串元素第 i 个晚 gap 秒开始（gap 0.04–0.1），用来做「一串小东西依次飞入、拼装」
+const after = (t, start, i, gap = 0.06) => t - (start + i * gap);
 // 带种子的随机数：同一种子每次结果一样，保证任意跳帧画面一致（不要用 Math.random）
 function mulberry32(a) {
   return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a);
@@ -134,13 +189,14 @@ function splitWords(el) {
   return out;
 }
 // 按词遮罩升起：第 k 个词在 start + k*stagger 开始，用 dur 秒从遮罩下方升到原位
-function riseWords(words, t, start, { stagger = 0.08, dur = 0.9, ease = E.outExpo, from = 110, tilt = 4 } = {}) {
+function riseWords(words, t, start, { stagger = 0.06, dur = 0.55, ease = E.outExpo, from = 110, tilt = 4 } = {}) {
   words.forEach((w, k) => {
     const p = ease(seg(t, start + k * stagger, start + k * stagger + dur));
     w.style.transform = `translateY(${(1 - p) * from}%) rotate(${(1 - p) * tilt}deg)`;
   });
 }
-// 相机：关键帧 {t, x, y, s, r, ease}，(x,y) 是画面中心对准的世界坐标；位置按缓动插值，缩放按对数插值（推拉匀速）
+// 相机：关键帧 {t, x, y, s, r, ease}，(x,y) 是画面中心对准的世界坐标；位置和缩放都按缓动插值（缩放取对数，推拉才均匀）。
+// 镜头推完要停：相邻两个关键帧写同一个值就是「停住」。不要一个镜头从头推到尾——让动作在静止的镜头里发生。
 function cameraAt(t, keys, ease = E.inOutCubic) {
   if (t <= keys[0].t) return { r: 0, ...keys[0] };
   for (let i = 1; i < keys.length; i++) {
@@ -163,8 +219,10 @@ const $ = (id) => document.getElementById(id);
 const world = $('world'), fx = $('fx'), ctx = fx.getContext('2d');
 fx.width = W; fx.height = H;
 const titleWords = splitWords($('title')), subWords = splitWords($('sub'));
-const BLOCK_T = 1.5, F = 1.5, Z = 0.42;                       // 方块入场时刻、弹簧频率、阻尼比（canvas 曲线共用）
-const CAM = [{ t: 0, x: 960, y: 540, s: 1 }, { t: DURATION, x: 900, y: 522, s: 1.075, r: -0.25 }]; // 慢推
+const BLOCK_T = 1.5, F = 2.6, Z = 0.5;                        // 方块入场时刻、弹簧频率、阻尼比（canvas 曲线共用）；f 2.5–4 才利落
+const HIT = BLOCK_T + 0.12;                                    // 方块落地那一帧（drop 默认 0.12 秒砸到位）
+const CAM = [{ t: 0, x: 960, y: 540, s: 1 }, { t: 2.4, x: 960, y: 540, s: 1 },                  // 镜头先不动，让动作在静止的镜头里发生
+  { t: 3.0, x: 930, y: 530, s: 1.04, ease: E.outCubic }, { t: DURATION, x: 930, y: 530, s: 1.04 }]; // 字都出完后补一个短推，推完停住
 const PLOT = { x0: 1180, x1: 1780, y0: 930, y1: 790, T: 3 };  // 曲线区域：τ 0–3 秒 → x0–x1，值 0–1 → y0–y1
 const ACCENT = ROOT.getPropertyValue('--accent').trim(), PAPER = ROOT.getPropertyValue('--paper').trim();
 const rnd = mulberry32(7), DOTS = [];
@@ -202,18 +260,20 @@ function draw(t, cam) {
 
 window.seek = async (t) => {
   const cam = cameraAt(t, CAM);
+  cam.s *= 1 + punch(t, HIT, 0.035);                           // 方块砸地那一刻镜头顿推 3.5%，0.2 秒内衰减回来
+  cam.y += shake(t, HIT, 6, 0.18);                             // 轻微震屏
   cssCamera(world, cam);
   fade($('brand'), E.outCubic(seg(t, 0.05, 0.7)));
   fade($('clock'), E.outCubic(seg(t, 0.15, 0.8)));
   $('clock').textContent = `t = ${t.toFixed(2)} s`;
   $('rule').style.transform = `scaleX(${E.inOutCubic(seg(t, 0.1, 1.3))})`;
-  riseWords(titleWords, t, 0.3, { stagger: 0.14, dur: 1.1 });
-  riseWords(subWords, t, 1.05, { stagger: 0.045, dur: 0.9, tilt: 2 });
+  riseWords(titleWords, t, 0.3, { stagger: 0.08, dur: 0.6 });
+  riseWords(subWords, t, 0.9, { stagger: 0.04, dur: 0.5, tilt: 2 });
   $('bar').style.transform = `scaleX(${E.outExpo(seg(t, 2.1, 2.9))})`;
-  const k = spring(t - BLOCK_T, F, Z);                         // 方块：弹簧放大 + 回正旋转
+  const k = drop(t, BLOCK_T), sq = squash(t - HIT, 0.12);      // 方块：0.12 秒先慢后快砸下来，落地压扁 12%、两三帧弹回、再弹两下稳住
   $('block').style.opacity = t < BLOCK_T ? 0 : 1;
-  $('block').style.transform = `scale(${Math.max(0, k)}) rotate(${(1 - k) * -16}deg)`;
-  const g = E.outExpo(seg(t, BLOCK_T + 0.3, BLOCK_T + 1.1));
+  $('block').style.transform = `translateY(${(1 - k) * -560}px) scale(${1 + 0.5 * sq}, ${1 - sq}) rotate(${(1 - Math.min(k, 1)) * -6}deg)`;
+  const g = E.outExpo(seg(t, BLOCK_T + 0.2, BLOCK_T + 0.65));
   $('glyph').style.opacity = g; $('glyph').style.transform = `translateY(${(1 - g) * 36}px)`;
   fade($('axisTitle'), E.outCubic(seg(t, 1.5, 2.1)));
   fade($('axisOne'), E.outCubic(seg(t, 1.6, 2.2)));
