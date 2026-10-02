@@ -29,10 +29,17 @@
 
 ## 安装
 
-把 `code-video-director` 文件夹（压缩包解压出来就是它）整个放进：
+任选一种：
 
-- Codex：`~/.codex/skills/code-video-director/`
-- Claude Code：`~/.claude/skills/code-video-director/`
+1. **用 git 装**（以后在这个文件夹里 `git pull` 就能更新）：
+
+   ```
+   git clone https://github.com/chuspeeism/code-video-director.git ~/.claude/skills/code-video-director   # Claude Code
+   git clone https://github.com/chuspeeism/code-video-director.git ~/.codex/skills/code-video-director    # Codex
+   ```
+
+2. **让 Agent 帮你装**：把仓库链接 `https://github.com/chuspeeism/code-video-director` 发给 Claude Code 或 Codex，说「把这个 skill 装到我的 skills 目录」。
+3. **用压缩包**：把 `code-video-director` 文件夹（压缩包解压出来就是它）整个放进 Codex 的 `~/.codex/skills/` 或 Claude Code 的 `~/.claude/skills/`。
 
 需要：Node 18+、ffmpeg、Python 3 + numpy。网页渲染优先用系统里的 Chrome，不用另外下载浏览器。做三维动画要装 Blender。配音、生图用你自己的服务，没有就跳过或用系统语音。
 
