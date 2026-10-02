@@ -29,7 +29,7 @@
 
 ## 安装
 
-把整个 `code-video-director` 文件夹放进：
+把 `code-video-director` 文件夹（压缩包解压出来就是它）整个放进：
 
 - Codex：`~/.codex/skills/code-video-director/`
 - Claude Code：`~/.claude/skills/code-video-director/`
