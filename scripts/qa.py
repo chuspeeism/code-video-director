@@ -197,32 +197,81 @@ STYLE_RULES = {
         "明显动作_面积%": (">=", 16, "在动的面积太小：每次重击加冲击叠层——burst() 碎片火花、速度线、sfx() 拟声大字、白闪，同一帧炸开、各自飞走；冲刺、飞入、砸地要占画面一大块"),
         "辅层偏薄的镜头_占比%": ("<=", 20, "安静镜头没有辅层：每个镜头 1 个快主动作 + 至少 3 层辅动作——镜头匀速缓推、一层真的在走的粒子（飘落的灰、上升的火星，drift()）、一两样小东西小摆（烛火、斗篷角，sway()）；辅层可以循环，要小、要错开"),
         "成段全空的镜头_占比%": ("<=", 10, "镜头里有成段什么都没动：分食、包扎、对话这类安静镜头也要有辅层托着——镜头缓推 + 飘落的粒子 + 小摆，主动作之间别让画面死掉"),
+        "原地晃动_面积%": ("<=", 20, "MV 档原地小晃太多：辅层的粒子、小摆要小面积（每样只占画面一小块），别让整排东西一起晃"),
+        "动作长短变化": (">=", 0.4, "动作长短全一个样：砸下 3–4 帧、刀光 5–6 帧、走位 0.3–0.5 秒混着用（MV 高潮本来就多是短促重击，门槛比通用的 0.6 低）"),
         "最长没动作秒": ("<=", 0.5, "有一段超过 0.5 秒什么都没在动：对峙、角力的定格压到 4–6 帧（0.13–0.2 秒），或在这里补一个事件、切一刀"),
+    },
+    # 讲述铺陈档：讲解、纪录片、地图、说明书、照片素材包装、绘本、叙事动画的开头和讲述段。
+    # 按 8 条原片同一段定（讲解、素材包装、地图、说明书、绘本、数码宝贝开头、节气开头都能过）：一个动作 0.27–0.83 秒、最快 293–1488、慢进慢出 9%–62%、
+    # 停顿 19%–60%、动作长短 0.43–1.64、一帧冲到全速 6%–40%、快起慢停 13.7% 起、平时快的那部分 146–456
+    "calm": {
+        "动作最快速度_中位px每秒": (">=", 250, "动作太慢太小：稳动作也要有去处，0.4–1.0 秒从 A 到 B（慢推、画线、组装），别原地磨"),
+        "动作用时_中位秒": ("<=", 1.0, "动作拖过 1 秒：讲述档的稳动作 0.4–1.0 秒做完，超过就像卡住了"),
+        "慢起慢停_占比%": ("<=", 70, "两头对称的慢进慢出太多：镜头慢推可以对称，物体入场、弹出还是要快起慢停"),
+        "快起慢停_占比%": (">=", 10, "快起慢停的动作太少：照片、地图可以慢推，但入场、弹出、落定还是一下出去再软着陆"),
+        "动作长短变化": (">=", 0.4, "动作长短全一个样：快的弹出、稳的慢推、落定的停顿混着用"),
+        "一帧冲到全速_占比%": ("<=", 45, "起步太猛：入场先预备一下再走"),
+        "动作速度_快的那10%": (">=", 120, "画面里一样快的东西都没有：每段至少有一两下利落的动作（弹出、翻页、落定）"),
+        "没有明显动作_占比%": ("between", (15, 65), "停顿不对：讲述档要留呼吸——开头铺陈、讲完一个点停 0.3–0.8 秒，让观众看清、听清；但也别一大半时间干等（原片停顿 19%–60%）"),
+    },
+    # 快剪档（快而有呼吸）：产品宣传片、动态排版、绘本、角色动画的日常段。按宣传片、绘本、数码宝贝开头三条原片定：
+    # 一个动作 0.27–0.29 秒、最快 875–1856、停顿 22%–33%、动作长短 0.43 起、一帧冲到全速 40% 左右
+    "promo": {
+        "动作最快速度_中位px每秒": (">=", 650, "快剪档动作不够快：入场、弹出、切换 0.2–0.4 秒做完"),
+        "动作用时_中位秒": ("<=", 0.45, "快剪档动作拖：一个动作压到 0.2–0.4 秒"),
+        "动作长短变化": (">=", 0.4, "动作长短全一个样：弹出 0.2 秒、入场 0.3 秒、走位 0.5 秒混着用"),
+        "一帧冲到全速_占比%": ("<=", 45, "起步太猛：入场先预备一下再冲"),
+        "没有明显动作_占比%": ("between", (15, 35), "节奏不对：快剪档要快而有呼吸——一下利落的动作之后停 0.3–0.8 秒让人看清（原片停顿 22%–33%），既别一刻不停，也别停太多"),
     },
 }
 
 
-def motion_check(v, out_dir, add, style=None):
+TIER_NAME = {"mv": "MV 打斗", "calm": "讲述铺陈", "promo": "快剪"}
+
+
+def meets(val, op, thr):
+    """门槛判定：>=、<=，或 between（thr = (下限, 上限)）。"""
+    return thr[0] <= val <= thr[1] if op == "between" else (val >= thr if op == ">=" else val <= thr)
+
+
+def need(op, thr, unit=""):
+    return f"{thr[0]}–{thr[1]}{unit}" if op == "between" else f"{op} {thr}{unit}"
+
+
+def motion_check(v, out_dir, add, style=None, sections=None):
     here = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, here)
     import motion
     summ, ser, segs = motion.analyze(v)
     rep = motion.repeats(v)                       # 画面在重播：扣掉镜头之后，隔固定时间画面又回到原样
     summ = {**summ, "画面重播_占比%": rep["画面重播_占比%"]}
+    secs = []                                     # 节奏档按段定：每段单独汇总、按自己的档查
+    for a, b, tier in motion.parse_sections(sections):
+        s = motion.section(ser, segs, summ.get("帧率") or 30, a, b)
+        if s is not None:
+            secs.append({"起秒": a, "止秒": s["止秒"], "档": tier, "summary": s})
     with open(os.path.join(out_dir, "motion.json"), "w", encoding="utf-8") as f:
-        json.dump({"summary": summ, "series": ser, "segments": segs, "repeats": rep}, f, ensure_ascii=False)
-    rules = {**MOTION_RULES, **STYLE_RULES.get(style or "", {})}
-    for key, (op, thr, fix) in rules.items():
-        val = summ.get(key)
+        json.dump({"summary": summ, "series": ser, "segments": segs, "repeats": rep, "sections": secs}, f, ensure_ascii=False)
+    groups = [("", summ, style)] if not secs else [(f"[{x['起秒']:g}–{x['止秒']:g} 秒·{TIER_NAME.get(x['档'], x['档'])}] ", x["summary"], x["档"]) for x in secs]
+    checks = []
+    for tag, sm, st in groups:
+        rules = {**MOTION_RULES, **STYLE_RULES.get(st or "", {})}
+        if tag:
+            rules.pop("画面重播_占比%", None)          # 画面在重播按全片查一次
+        checks += [(tag, sm, key, r) for key, r in rules.items()]
+    if secs:
+        checks.append(("", summ, "画面重播_占比%", MOTION_RULES["画面重播_占比%"]))
+    for tag, sm, key, (op, thr, fix) in checks:
+        val = sm.get(key)
         if val is None:
-            add(key.split("_")[0], PASS, "量不出（完整的动作太少）")
+            add(tag + key.split("_")[0], PASS, "量不出（完整的动作太少）")
             continue
-        good = val >= thr if op == ">=" else val <= thr
+        good = meets(val, op, thr)
         unit = " 像素/秒" if (key.endswith("px每秒") or key == "动作速度_快的那10%") else ("%" if key.endswith("%") else ("秒" if key.endswith("秒") else ""))
         name = {"动作最快速度": "动作快不快", "动作速度": "快动作够不够", "动作长短变化": "动作有长有短", "一帧冲到全速": "起步有加速",
                 "没有明显动作": "空档", "明显动作": "在动的面积", "最长没动作秒": "最长停顿", "画面重播": "画面在重播", "辅层偏薄的镜头": "辅层偏薄", "成段全空的镜头": "成段全空"}.get(key.split("_")[0] if "_" in key else key, key.split("_")[0])
-        add(name, PASS if good else WARN,
-            (f"{key.split('_')[0]}（{key.split('_')[1].replace('px每秒', '')}）" if "_" in key else key) + f"= {val}{unit}（要求 {op} {thr}{unit}）" + ("" if good else "：" + fix))
+        add(tag + name, PASS if good else WARN,
+            (f"{key.split('_')[0]}（{key.split('_')[1].replace('px每秒', '')}）" if "_" in key else key) + f"= {val}{unit}（要求 {need(op, thr, unit)}）" + ("" if good else "：" + fix))
     # 逐帧条：开头 2.4 秒、最热闹的 2.4 秒，每格 0.2 秒——自己数同屏有几样东西在做「从 A 到 B」的动作，少于 3 样就返工
     t = ser["t"]; a = ser["act_area"]
     best, bt = -1, 0.0
@@ -257,7 +306,8 @@ def main():
     ap.add_argument("--out", help="报告和预览图目录（默认：成片旁边的 <成片名>_qa/）")
     ap.add_argument("--allow-solid-bg", action="store_true", help="风格本身就是纯色大底（动态排版快切），不查「画面空不空」")
     ap.add_argument("--fixed-layout", action="store_true", help="风格本身就是固定界面（交互网页录屏、说明书），不查「构图变化」「每秒变化」")
-    ap.add_argument("--style", choices=["mv"], help="片子路子：mv = MV、卡点、打斗这类一直热闹的片子，动态检查再加动作速度、动作用时、镜头、空档、在动面积、最长停顿、辅层偏薄、成段全空八条")
+    ap.add_argument("--sections", help="节奏档按段定，如 \"0-6:calm,6-:mv\"（开头 6 秒铺陈按讲述档查、后面按 MV 档查）；给了就不看 --style")
+    ap.add_argument("--style", choices=["mv", "calm", "promo"], help="节奏档：calm = 讲述铺陈（讲解、纪录片、地图、说明书、照片素材包装：稳动作 0.5–1.0 秒，停顿 15%%–65%%）；promo = 快剪（宣传片、动态排版、绘本、角色日常：0.2–0.4 秒利落动作，停顿 15%%–35%%）；mv = MV、卡点、打斗、高潮（一直热闹，停顿 ≤ 15%%）")
     ap.add_argument("--skip-motion", action="store_true", help="跳过动态检查（逐帧光流，60 秒成片要两三分钟）。只在反复调同一处时用，交付前必须跑")
     args = ap.parse_args()
     v = os.path.abspath(args.video)
@@ -357,7 +407,7 @@ def main():
     ms, strips = None, {}
     if not args.skip_motion:
         try:
-            ms, strips = motion_check(v, out_dir, add, args.style)
+            ms, strips = motion_check(v, out_dir, add, args.style, args.sections)
         except Exception as e:  # 动态分析失败不影响其它检查
             add("动态检查", WARN, f"没跑成：{e}")
     imgs = {"联系表": sheet(v, os.path.join(out_dir, "联系表.jpg"), 2, 6, 320, dur),

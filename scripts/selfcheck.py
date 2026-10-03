@@ -16,12 +16,12 @@ try:
 except Exception:
     sys.exit("[错误] 缺 numpy。先运行：python3 -m pip install numpy（被拦就用 python3 -m venv .venv && .venv/bin/pip install numpy）")
 import motion
-from qa import MOTION_RULES, STYLE_RULES
+from qa import MOTION_RULES, STYLE_RULES, meets, need
 
 SHOT_MIN = 1.0      # 短于 1 秒的镜头不单独判（快切段落整体看）
 
 # 分步实现（references/11）：每个问题属于哪一层——只许改当前这一遍的层，问题出在已锁的层就明说「解锁第 X 层」从那一遍重走
-LAYER_OF = {"动作慢": "第 1 层", "动作拖": "第 1 层", "慢进慢出": "第 1 层", "动作一个样": "第 1 层", "起步太猛": "第 1 层", "画面在重播": "第 1 层",
+LAYER_OF = {"一刻不停": "第 1/2 层", "动作慢": "第 1 层", "动作拖": "第 1 层", "慢进慢出": "第 1 层", "动作一个样": "第 1 层", "起步太猛": "第 1 层", "画面在重播": "第 1 层",
             "分镜动作复制": "第 1 层", "空档太长": "第 1/2 层", "停得太久": "第 1/2 层", "几乎没东西在动": "第 1/2 层",
             "一直在晃": "第 2 层", "辅层太薄": "第 2 层", "镜头里有空白": "第 2 层", "镜头从头推到尾": "第 2 层", "镜头太静": "第 2 层",
             "动作最快速度": "第 1 层", "动作用时": "第 1 层", "快起慢停": "第 1 层", "慢起慢停": "第 1 层", "动作长短变化": "第 1 层", "一帧冲到全速": "第 1 层", "画面重播": "第 1 层",
@@ -137,7 +137,7 @@ def shot_check(ser, segs, fps, frames, style=None):
     if len(mine) >= 5:
         dur = float(np.median([s["len_s"] for s in mine])); pk = float(np.median([s["peak"] for s in mine]))
         soft = float(np.mean([s["head"] == "缓入" and s["tail"] == "缓出" for s in mine])) * 100
-        slow, drag = (650, 0.5) if style == "mv" else (350, 0.8)      # MV 按两条 MV 原片（最快 952/973、用时 0.30/0.47 秒）收紧
+        slow, drag = {"mv": (650, 0.5), "promo": (650, 0.45), "calm": (250, 1.0)}.get(style, (350, 0.8))   # 按节奏档：MV、快剪收紧，讲述铺陈放宽
         if pk < slow:
             probs.append(("动作慢", f"动作最快时只有每秒 {pk:.0f} 像素（要 ≥ {slow}）", "缩短动作时长到 0.2–0.35 秒、拉大位移（至少画面宽 15%），用 drop()/beat()/travel()"))
         if dur > drag:
@@ -147,7 +147,7 @@ def shot_check(ser, segs, fps, frames, style=None):
         lens = [s["len_s"] for s in mine]
         spread = (np.percentile(lens, 75) - np.percentile(lens, 25)) / max(1e-6, np.median(lens))
         hard = float(np.mean([s["head"] == "硬起" for s in mine])) * 100
-        if len(mine) >= 8 and spread < 0.4:
+        if len(mine) >= 8 and spread < (0.3 if style else 0.4):
             probs.append(("动作一个样", f"动作时长几乎一样（长短变化 {spread:.2f}）", "按动作类型混用：砸下 drop 0.12 秒、入场 beat 0.3 秒、小东西 pop 0.2 秒、大东西 0.5–0.7 秒"))
         if hard > 50:
             probs.append(("起步太猛", f"{hard:.0f}% 的动作一帧冲到全速", "入场改 beat()（预备 0.1 秒再冲），砸下改 drop()（先慢后快、到点急停）"))
@@ -174,7 +174,9 @@ def shot_check(ser, segs, fps, frames, style=None):
             best = max(best, run)
         if best / fps > 0.5:
             probs.append(("停得太久", f"有一段 {best / fps:.2f} 秒什么都没在动", "对峙、角力这类定格压到 4–6 帧（0.13–0.2 秒），或在这里补一个事件、切一刀"))
-    if act and dur_shot >= 1.5 and np.mean(np.array(act) < 0.01) >= 0.8 and (not cam or np.mean(np.array(cam) > motion.CAM_MOVE) < 0.5):
+    if style in ("calm", "promo") and act and dur_shot >= 3 and np.mean(np.array(act) < 0.01) < 0.05:
+        probs.append(("一刻不停", f"{dur_shot:.1f} 秒的镜头里几乎没有停顿", "讲述、快剪档要留呼吸：一个点讲完、一下利落的动作做完，停 0.3–0.8 秒让人看清；开头可以铺陈（慢推、渐显），别每一帧都塞动作"))
+    if act and dur_shot >= 1.5 and np.mean(np.array(act) < 0.01) >= (0.9 if style == "calm" else 0.8) and (not cam or np.mean(np.array(cam) > motion.CAM_MOVE) < 0.5):
         probs.append(("几乎没东西在动", f"{dur_shot:.1f} 秒里八成时间没有明显动作", "加主动作 + 跟随动作 + 一串依次飞入 / 拼装的小物件（after() 错开 0.04–0.1 秒）"))
     return probs
 
@@ -183,7 +185,8 @@ def main():
     ap = argparse.ArgumentParser(description="自检循环：逐个镜头找动态毛病，写返工单")
     ap.add_argument("video"); ap.add_argument("--out", default=None); ap.add_argument("--ref", default=None)
     ap.add_argument("--round", type=int, default=1)
-    ap.add_argument("--style", choices=["mv"], help="片子路子：mv = MV、卡点、打斗，加动作速度、动作用时、镜头、空档、在动面积、最长停顿、辅层八条")
+    ap.add_argument("--sections", help="节奏档按段定，如 \"0-6:calm,6-:mv\"：每段按自己的档查全片指标，镜头按它开始的时刻归档；给了就不看 --style")
+    ap.add_argument("--style", choices=["mv", "calm", "promo"], help="节奏档：calm = 讲述铺陈（稳动作、要留停顿）；promo = 快剪（快而有呼吸）；mv = MV、卡点、打斗、高潮（一直热闹）")
     ap.add_argument("--board", default=None, help="分镜表（默认找成片旁边的 docs/分镜.md）：查动作栏是不是整列复制同一句")
     ap.add_argument("--src", default=None, help="项目代码目录（默认是成片所在的目录）：查主动作是不是用「时间 %% 周期」写成了循环")
     a = ap.parse_args()
@@ -209,20 +212,32 @@ def main():
                 thr = round(min(rv + 15, 75), 1)
             else:
                 continue
-            if k in rules and rules[k][0] == op:      # 和现有门槛（含 --style mv）取更严的那个
+            if k in rules and rules[k][0] == op and op != "between":      # 和现有门槛（含 --style mv）取更严的那个
                 thr = max(thr, rules[k][1]) if op == ">=" else min(thr, rules[k][1])
             rules[k] = (op, thr, fix + f"（参考片 {rv}）")
+    secs = motion.parse_sections(a.sections)
+    style_at = lambda t: next((tier for s0, s1, tier in secs if s0 <= t < s1), a.style)
+    groups = [("", summ, rules)]
+    if secs:
+        groups = []
+        for s0, s1, tier in secs:
+            sm = motion.section(ser, segs, fps, s0, s1)
+            if sm is not None:
+                r = {**MOTION_RULES, **STYLE_RULES.get(tier, {})}; r.pop("画面重播_占比%", None)
+                groups.append((f"[{s0:g}–{sm['止秒']:g} 秒·{tier}] ", sm, r))
+        groups.append(("", summ, {"画面重播_占比%": MOTION_RULES["画面重播_占比%"]}))
     glob_fail = []
-    for k, (op, thr, fix) in rules.items():
-        val = summ.get(k)
-        if val is not None and not (val >= thr if op == ">=" else val <= thr):
-            glob_fail.append((k, val, op, thr, fix))
+    for tag, sm, rr in groups:
+        for k, (op, thr, fix) in rr.items():
+            val = sm.get(k)
+            if val is not None and not meets(val, op, thr):
+                glob_fail.append((k, val, op, thr, fix, tag))
     # 2. 逐个镜头找毛病
     rows = []
     for t0, t1, frames in shots(ser):
         if (t1 - t0) < SHOT_MIN:
             continue
-        for kind, what, fix in shot_check(ser, segs, fps, frames, a.style):
+        for kind, what, fix in shot_check(ser, segs, fps, frames, style_at((t0 + t1) / 2)):      # 镜头按中点归档
             rows.append((t0, t1, kind, what, fix))
         # 画面在重播：这个镜头里有一窗被判重播（重叠 1 秒以上）
         hit = [w for w in (rep or {}).get("窗口", []) if min(t1, w[1]) - max(t0, w[0]) >= 1.0]
@@ -250,11 +265,11 @@ def main():
         lines += ["**全部达标。** 把这一轮的数字写进交付说明的「自检」一节。"]
     else:
         lines += ["## 全片还差的", "", "| 指标 | 属于哪层 | 现在 | 要求 | 怎么改 |", "|---|---|---|---|---|"]
-        lines += [f"| {k.split('_')[0]} | {LAYER_OF.get(k.split('_')[0], '—')} | {val} | {op} {thr} | {fix} |" for k, val, op, thr, fix in glob_fail] or ["| — | — | — | — | 全片指标已达标 |"]
+        lines += [f"| {tag}{k.split('_')[0]} | {LAYER_OF.get(k.split('_')[0], '—')} | {val} | {need(op, thr)} | {fix} |" for k, val, op, thr, fix, tag in glob_fail] or ["| — | — | — | — | 全片指标已达标 |"]
         lines += ["", "## 逐个镜头（只重渲这些时间段）", "", "| 时间段 | 问题 | 属于哪层 | 量到的 | 改哪里 |", "|---|---|---|---|---|"]
         lines += [f"| {t0:.1f}–{t1:.1f} 秒 | {kind} | {LAYER_OF.get(kind, '锁' if kind == '锁层被改动' else '—')} | {what} | {fix} |" for t0, t1, kind, what, fix in rows] or ["| — | — | — | — | 没有单独出问题的镜头，按全片还差的改 |"]
         lines += ["", "分步实现时：只改当前这一遍的层；问题属于已经锁住的层，就明说「解锁第 X 层」，从那一遍重新渲、重新量、重新锁（见 references/11-分步实现与锁层.md）。"]
-        cmd = f"python3 {HERE}/selfcheck.py 成片.mp4 --out qa --round {a.round + 1}" + (f" --ref {a.ref}" if a.ref else "") + (f" --style {a.style}" if a.style else "")
+        cmd = f"python3 {HERE}/selfcheck.py 成片.mp4 --out qa --round {a.round + 1}" + (f" --ref {a.ref}" if a.ref else "") + (f" --style {a.style}" if a.style else "") + (f' --sections "{a.sections}"' if a.sections else "")
         lines += ["", f"改完只删掉这些时间段的帧重渲，合成后再跑：`{cmd}`",
                   "最多 3 轮；第 3 轮还没清空，就把剩下的问题写进交付说明，别假装没问题。"]
     if ref:

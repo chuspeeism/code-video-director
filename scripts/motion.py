@@ -542,6 +542,28 @@ def shot_layers(ser, min_len=1.0):
     return out
 
 
+def parse_sections(text):
+    """「0-6:calm,6-:mv」→ [(0.0, 6.0, "calm"), (6.0, inf, "mv")]：节奏档按段定，每段按自己的档查。"""
+    out = []
+    for part in (text or "").split(","):
+        if part.strip():
+            rng, tier = part.split(":")
+            a, b = rng.split("-")
+            out.append((float(a or 0), float(b) if b.strip() else float("inf"), tier.strip()))
+    return out
+
+
+def section(ser, segs, fps, a, b):
+    """只汇总 a–b 秒这一段（节奏档按段定时，每段单独打分）。太短（不到 0.5 秒）返回 None。"""
+    idx = [i for i, t in enumerate(ser["t"]) if a <= t < b]
+    if len(idx) < max(2, int(fps * 0.5)):
+        return None
+    sub = {k: [v[i] for i in idx] for k, v in ser.items()}
+    t0 = ser["t"][0] - 0.5 / fps
+    ss = [s for s in segs if a <= t0 + s["f"] / fps < b]
+    return {**summarize(sub, ss, fps, len(idx) + 1, len(idx) / fps), "起秒": a, "止秒": round(min(b, ser["t"][idx[-1]] + 0.5 / fps), 2)}
+
+
 def summarize(ser, segs, fps, n, D):
     valid = [i for i, c in enumerate(ser["cut"]) if not c and ser["act_blobs"][i] is not None]
     g = lambda key: np.array([ser[key][i] for i in valid], float)

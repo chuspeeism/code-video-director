@@ -25,14 +25,27 @@ METRICS = {
 }
 
 
-# 每一遍的过线标准（MV 类；讲解片加 --style none 只查通用的几项）：没过线不许锁，除非 --force 写明理由
+# 每一遍的过线标准（GATES 是 MV 档；--style calm / promo / none 换成讲述铺陈、产品快剪、只查通用几项）：没过线不许锁，除非 --force 写明理由
 GATES = {
     1: {"动作最快速度_中位px每秒": (">=", 650), "动作用时_中位秒": ("<=", 0.5), "慢起慢停_占比%": ("<=", 60), "画面重播_占比%": ("<=", 2),
         "动作长短变化": (">=", 0.6), "一帧冲到全速_占比%": ("<=", 35)},
     2: {"辅层偏薄的镜头_占比%": ("<=", 20), "成段全空的镜头_占比%": ("<=", 10), "原地晃动_面积%": ("<=", 15), "镜头在动_占比%": (">=", 35)},
     3: {"明显动作_面积%": (">=", 16), "动作速度_快的那10%": (">=", 170), "没有明显动作_占比%": ("<=", 15), "最长没动作秒": ("<=", 0.5)},
 }
+GATES[1]["动作长短变化"] = (">=", 0.4); GATES[2]["原地晃动_面积%"] = ("<=", 20)     # MV 档校准：高潮多是短促重击、辅层要给原地小晃留空间
 GENERAL = {1: {"动作最快速度_中位px每秒": (">=", 350), "动作用时_中位秒": ("<=", 0.8)}, 2: {"原地晃动_面积%": ("<=", 15)}, 3: {}}
+CALM = {1: {"动作最快速度_中位px每秒": (">=", 250), "动作用时_中位秒": ("<=", 1.0), "画面重播_占比%": ("<=", 2), "动作长短变化": (">=", 0.4), "一帧冲到全速_占比%": ("<=", 45)},
+        2: {"原地晃动_面积%": ("<=", 15)}, 3: {"没有明显动作_占比%": ("between", (15, 65))}}
+PROMO = {1: {"动作最快速度_中位px每秒": (">=", 650), "动作用时_中位秒": ("<=", 0.45), "画面重播_占比%": ("<=", 2), "动作长短变化": (">=", 0.4), "一帧冲到全速_占比%": ("<=", 45)},
+         2: {"原地晃动_面积%": ("<=", 15)}, 3: {"没有明显动作_占比%": ("between", (15, 35))}}
+
+
+TIER_GATES = {"mv": GATES, "calm": CALM, "promo": PROMO, "none": GENERAL}
+
+
+def misses(vals, gates):
+    ok = lambda v, op, thr: thr[0] <= v <= thr[1] if op == "between" else (v >= thr if op == ">=" else v <= thr)
+    return [(k, vals.get(k), op, thr) for k, (op, thr) in gates.items() if vals.get(k) is not None and not ok(vals[k], op, thr)]
 
 
 def sha(path):
@@ -88,13 +101,16 @@ def do_lock(a):
     new = measure(a.motion)
     nums = {k: new.get(k) for k, _ in METRICS[a.layer]}
     old = st.get(str(a.layer))
-    gates = (GENERAL if a.style == "none" else GATES)[a.layer]
-    miss = [(k, nums.get(k) if k in nums else new.get(k), op, thr) for k, (op, thr) in gates.items()
-            if (nums.get(k) if k in nums else new.get(k)) is not None and not ((nums.get(k) if k in nums else new.get(k)) >= thr if op == ">=" else (nums.get(k) if k in nums else new.get(k)) <= thr)]
+    secs = json.load(open(a.motion, encoding="utf-8")).get("sections") or []      # qa.py 带 --sections 量的：每段按自己的档过线
+    if secs:
+        miss = [(f"[{x['起秒']:g}–{x['止秒']:g} 秒·{x['档']}] {k}", v, op, thr) for x in secs
+                for k, v, op, thr in misses({**x["summary"], "画面重播_占比%": new.get("画面重播_占比%")}, TIER_GATES.get(x["档"], GATES)[a.layer])]
+    else:
+        miss = misses(new, TIER_GATES.get(a.style, GATES)[a.layer])
     if miss and not a.force:
         print(f"[不能上锁] 第 {a.layer} 层（{NAMES[a.layer]}）还没过这一遍的线：")
         for k, v, op, thr in miss:
-            print(f"  · {k.split('_')[0]} = {v}（要 {op} {thr}）")
+            print(f"  · {k.split('_')[0]} = {v}（要 {f'{thr[0]}–{thr[1]}' if op == 'between' else f'{op} {thr}'}）")
         print("先在这一遍里改到过线再锁；确实过不了，加 --force --why \"理由\"（会写进锁文件和交付说明）")
         sys.exit(4)
     bad = []
@@ -123,7 +139,7 @@ def main():
     l.add_argument("--files", nargs="+", required=True, help="这一层的代码文件")
     l.add_argument("--motion", required=True, help="这一遍渲染（render.mjs --layers 1..N）用 qa.py 量出的 motion.json")
     l.add_argument("--force", action="store_true"); l.add_argument("--why", default="")
-    l.add_argument("--style", choices=["mv", "none"], default="mv", help="mv（默认）按 MV 的过线标准；none 讲解片只查通用几项")
+    l.add_argument("--style", choices=["mv", "calm", "promo", "none"], default="mv", help="节奏档：mv（默认）MV 打斗；calm 讲述铺陈；promo 快剪；none 只查通用几项（和 qa.py 用同一档）")
     c = sub.add_parser("check", help="查锁住的文件有没有被改动")
     for p in (l, c):
         p.add_argument("--state", default=os.path.join("qa", "锁.json"))
